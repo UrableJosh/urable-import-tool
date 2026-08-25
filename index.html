@@ -1864,7 +1864,7 @@ async function importJobsRun(key){
   const payPlanned=jobsData.filter(j=>j.paid>0).length;
   const totalOps=custList.length+prodList.length+vehList.length+jobsData.length+payPlanned;
   let done=0, createdCust=0, createdProd=0, createdVeh=0, createdJobs=0, failedJobs=0;
-  let reusedCust=0, reusedVeh=0, reusedProd=0, createdPayments=0;
+  let reusedCust=0, reusedVeh=0, reusedProd=0, createdPayments=0, skippedJobs=0;
   const madeJobs=[]; // jobs created this run, for the payments phase
   let paymentsBlocked=false;
 
@@ -1938,6 +1938,17 @@ async function importJobsRun(key){
       exProdPrices[nm]=p.prices||[];
     }
   }
+
+  // existing jobs → skip ones already imported, so a re-run only fills gaps.
+  // Signature: customer + start + subtotal (no job-level unique id exists).
+  const exJobs=await pageAll('jobs');
+  const exJobByKey={};
+  for(const ej of exJobs){
+    const cid=String(ej.customerRef||'').split('/').pop();
+    const sub=(ej.invoice&&ej.invoice.subtotal)||0;
+    const k=cid+'|'+(ej.start||0)+'|'+sub;
+    if(!exJobByKey[k]) exJobByKey[k]={id:ej.id,paid:(ej.invoice&&ej.invoice.amountPaid)||0};
+  }
   function tick(phase){ done++; fill.style.width=Math.round(done/totalOps*100)+'%';
     ptext.textContent=phase+' · '+done.toLocaleString()+' / '+totalOps.toLocaleString()+' operations'; }
 
@@ -1971,17 +1982,26 @@ async function importJobsRun(key){
     tick('Creating customers');
   });
 
-  // 2) products — reuse existing (append missing price variants), create the rest
+  // 2) products — reuse when the existing entry already has every price we need.
+  // Otherwise create a separate "<name> (imported)" companion rather than
+  // editing the shop's real catalog entry: appending our variants to a
+  // customer's live service rewrites their pricing (and fails outright when
+  // their existing price has no label, which the API requires once there's
+  // more than one). Historical data must never mutate a working catalog.
   await pool(prodList, 4, async ([name,centsSet])=>{
     const wanted=[...centsSet].sort((a,b)=>a-b).map(c=>({sku:'imp'+c,label:'Imported $'+(c/100).toFixed(2),value:c}));
     if(prodMap[name]&&exProdSkus[name]){
       const missing=wanted.filter(w=>!exProdSkus[name].has(w.sku));
       if(!missing.length){ reusedProd++; tick('Matching services'); return; }
-      const r=await apiFetch('/v1/products/'+prodMap[name],{method:'PATCH',
-        body:JSON.stringify({prices:(exProdPrices[name]||[]).concat(missing)})},key);
-      if(r.ok&&r.body&&r.body.success){ reusedProd++; }
-      else err('product '+name,(r.body&&r.body.error)||('HTTP '+r.status));
-      tick('Updating services'); return;
+      const compName=name+' (imported)';
+      if(prodMap[compName]&&exProdSkus[compName]){
+        const missing2=wanted.filter(w=>!exProdSkus[compName].has(w.sku));
+        if(!missing2.length){ prodMap[name]=prodMap[compName]; reusedProd++; tick('Matching services'); return; }
+      }
+      const cr=await apiFetch('/v1/products',{method:'POST',body:JSON.stringify({type:'service',name:compName,industry:selectedIndustry(),categoryName:'Imported',taxable:false,prices:wanted})},key);
+      if(cr.ok&&cr.body&&cr.body.success){ prodMap[name]=cr.body.data.id; createdProd++; }
+      else err('product '+compName,(cr.body&&cr.body.error)||('HTTP '+cr.status));
+      tick('Creating services'); return;
     }
     const r=await apiFetch('/v1/products',{method:'POST',body:JSON.stringify({type:'service',name:name,industry:selectedIndustry(),categoryName:'Imported',taxable:false,prices:wanted})},key);
     if(r.ok&&r.body&&r.body.success){ prodMap[name]=r.body.data.id; createdProd++; }
@@ -2009,6 +2029,16 @@ async function importJobsRun(key){
     const ck=custKey(j.customer);
     const custId=custMap[ck];
     if(!custId){ failedJobs++; err('job #'+j.num,'customer was not created'); tick('Creating jobs'); return; }
+    // Already imported? Skip — this makes re-running a file safe, so a partial
+    // or failed run can be finished by simply importing the same file again.
+    const sig=custId+'|'+(j.start||0)+'|'+j.subtotal;
+    const already=exJobByKey[sig];
+    if(already){
+      skippedJobs++;
+      // self-heal: the job exists but its historical payment never landed
+      if(j.paid>0&&!already.paid) madeJobs.push({jid:already.id,custId:custId,j:j});
+      tick('Matching jobs'); return;
+    }
     let itemIds=j.vehicles.map(v=>itemMap[ck+'|'+normVeh(v)]||findVehicle(ck,v)).filter(Boolean);
     if(!itemIds.length){
       // Jobs require at least one item — create a placeholder vehicle once per customer
@@ -2033,6 +2063,7 @@ async function importJobsRun(key){
     if(!useCatalog&&j.lineItems.length){
       jobNotes=['Services: '+j.lineItems.join(', '),j.notes].filter(Boolean).join(' | ');
     }
+    if(j.num) jobNotes=['Imported job #'+j.num,jobNotes].filter(Boolean).join(' | ');
     const payload={customerId:custId,itemIds:itemIds,type:j.type,status:j.status,
       industry:j.industry||selectedIndustry(),
       lineItems:lineItems,autoTax:false};
@@ -2058,6 +2089,7 @@ async function importJobsRun(key){
     const r=await apiFetch('/v1/jobs',{method:'POST',body:JSON.stringify(payload)},key);
     if(r.ok&&r.body&&r.body.success){
       createdJobs++;
+      exJobByKey[sig]={id:r.body.data.id,paid:0}; // guard against in-file repeats
       if(j.paid>0) madeJobs.push({jid:r.body.data.id,custId:custId,j:j});
     }
     else { failedJobs++; err('job #'+j.num,(r.body&&r.body.error)||('HTTP '+r.status)); }
@@ -2089,7 +2121,8 @@ async function importJobsRun(key){
   const gs=Object.entries(grouped).sort((a,b)=>b[1]-a[1]).map(([m,c])=>'&ldquo;'+escHtml(m)+'&rdquo; &times;'+c).join('<br>');
   const sb=document.getElementById('summaryBox');
   sb.style.display='block';
-  sb.innerHTML='<strong>Jobs import complete.</strong> '+createdJobs.toLocaleString()+' jobs created · '+
+  sb.innerHTML='<strong>Jobs import complete.</strong> '+createdJobs.toLocaleString()+' jobs created'+
+    (skippedJobs?', '+skippedJobs.toLocaleString()+' already imported (skipped)':'')+' · '+
     createdCust.toLocaleString()+' customers created, '+reusedCust.toLocaleString()+' matched to existing · '+
     createdVeh.toLocaleString()+' vehicles created, '+reusedVeh.toLocaleString()+' matched · '+
     createdProd.toLocaleString()+' services created, '+reusedProd.toLocaleString()+' reused · '+
