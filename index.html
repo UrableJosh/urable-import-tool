@@ -1,0 +1,2236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Urable Data Import</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* Matches the Urable app theme (app.urable.com):
+   primary #2fd2a8 · dark #222428 · background #f4f5f8 · font Roboto */
+:root{
+  --mint:#2FD2A8; --mint-dark:#1D9E75; --mint-darker:#0F6E56;
+  --black:#222428; --grey:#6b6b6b; --lt-grey:#92949c;
+  --line:#e6e8eb; --bg:#f4f5f8; --card:#ffffff;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Roboto','Helvetica Neue',-apple-system,sans-serif;background:var(--bg);min-height:100vh;color:var(--black)}
+header{background:#fff;border-bottom:1px solid var(--line);padding:14px 32px;display:flex;align-items:center;gap:14px}
+.logo-sub{font-size:13.5px;font-weight:500;letter-spacing:0.06em;text-transform:uppercase;color:var(--lt-grey);border-left:1px solid var(--line);padding-left:14px}
+main{max-width:880px;margin:36px auto;padding:0 24px}
+.card{background:var(--card);border-radius:10px;padding:28px;box-shadow:0 2px 8px rgba(34,36,40,.07)}
+.card+.card{margin-top:20px}
+h2{font-size:17px;font-weight:500;letter-spacing:0.01em;margin-bottom:6px}
+.sub{font-size:13.5px;color:var(--grey);line-height:1.6}
+.drop-zone{border:2px dashed #d3d6db;border-radius:10px;padding:40px 24px;text-align:center;cursor:pointer;transition:all .2s;margin-top:20px;background:#fafbfc}
+.drop-zone:hover,.drop-zone.drag-over{border-color:var(--mint);background:#f0fbf7}
+.drop-zone input{display:none}
+.drop-icon{font-size:34px;margin-bottom:10px;color:var(--mint)}
+.drop-title{font-size:15px;font-weight:500;margin-bottom:6px}
+.drop-hint{font-size:13px;color:var(--lt-grey)}
+.platforms{display:flex;gap:8px;justify-content:center;margin-top:16px;flex-wrap:wrap}
+.platform-tag{font-size:11px;padding:4px 10px;border-radius:99px;background:#f4f5f8;color:var(--grey);border:1px solid var(--line)}
+.platform-tag.any{background:#eafcf6;border-color:#b9ecd9;color:var(--mint-darker);font-weight:700}
+.detected{display:none;align-items:center;gap:10px;background:#eafcf6;border:1px solid #b9ecd9;border-radius:8px;padding:12px 16px;margin-top:16px}
+.detected.show{display:flex}
+.det-badge{font-size:12px;font-weight:700;padding:3px 10px;border-radius:99px;background:var(--mint-dark);color:#fff}
+.det-text{font-size:13px}
+.det-stats{font-size:12px;color:var(--grey);margin-left:auto}
+.error-box{display:none;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:12px 16px;margin-top:16px;font-size:13px;color:#dc2626}
+.error-box.show{display:block}
+#tableWrap{overflow-x:auto;margin-top:16px;border:1px solid var(--line);border-radius:8px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+thead th{text-align:left;padding:8px 10px;background:var(--bg);color:var(--grey);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--line)}
+tbody td{padding:8px 10px;border-bottom:1px solid #f0f0ee;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+tbody tr:last-child td{border-bottom:none}
+.more-row td{color:var(--lt-grey);font-style:italic}
+.type-person{display:inline-block;font-size:10px;padding:2px 7px;border-radius:99px;background:#f0f0ee;color:var(--grey)}
+.type-business{display:inline-block;font-size:10px;padding:2px 7px;border-radius:99px;background:#fff7ed;color:#c2620a;border:1px solid #fed7aa}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:11px 24px;background:var(--mint);color:#fff;border:none;border-radius:6px;font-size:14px;font-weight:500;font-family:'Roboto',sans-serif;cursor:pointer;transition:background .15s;box-shadow:0 2px 6px rgba(47,210,168,.35)}
+.btn:hover{background:var(--mint-dark)}
+.btn:disabled{background:#c9cdd3;box-shadow:none;cursor:not-allowed}
+.btn.secondary{background:#fff;border:1px solid var(--line);color:var(--grey);font-weight:400;box-shadow:none}
+.btn.secondary:hover{background:var(--bg)}
+#results,#mapperCard{display:none}
+/* mode tabs */
+.mode-tabs{display:flex;gap:0;margin-top:22px;border:1px solid var(--line);border-radius:8px;overflow:hidden;width:fit-content}
+.mode-tab{padding:9px 20px;font-size:13px;cursor:pointer;background:#fff;color:var(--grey);border:none;font-family:'Roboto',sans-serif}
+.mode-tab.active{background:var(--mint);color:#fff;font-weight:500}
+.mode-panel{display:none;margin-top:18px}
+.mode-panel.active{display:block}
+/* API panel */
+.api-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
+.api-row input[type=password],.api-row input[type=text]{flex:1;min-width:260px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font-size:13px;font-family:monospace}
+.api-note{font-size:12px;color:var(--lt-grey);line-height:1.6;margin-top:10px}
+.api-note a{color:var(--mint-dark)}
+.check-row{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--grey);margin-top:12px}
+.progress-wrap{display:none;margin-top:16px}
+.progress-bar{height:8px;background:#f0f0ee;border-radius:99px;overflow:hidden}
+.progress-fill{height:100%;width:0%;background:var(--mint);transition:width .2s}
+.progress-text{font-size:12.5px;color:var(--grey);margin-top:8px}
+.import-log{display:none;margin-top:14px;max-height:180px;overflow-y:auto;background:#fafaf9;border:1px solid var(--line);border-radius:8px;padding:10px 14px;font-size:12px;font-family:monospace;line-height:1.7}
+.log-err{color:#dc2626}
+.log-ok{color:var(--mint-darker)}
+.summary-box{display:none;margin-top:14px;background:#eafcf6;border:1px solid #b9ecd9;border-radius:8px;padding:14px 16px;font-size:13.5px;line-height:1.7}
+/* mapper */
+.map-table{width:100%;font-size:13px;margin-top:14px}
+.map-table td{padding:7px 10px;border-bottom:1px solid #f0f0ee;max-width:none;overflow:visible;white-space:normal}
+.map-field{font-weight:700;width:180px}
+.map-table select{width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:6px;font-size:13px;background:#fff;font-family:'Roboto',sans-serif}
+.map-table select.guessed{border-color:var(--mint);background:#f6fdfb}
+.ai-hint{display:flex;align-items:center;gap:10px;margin-top:14px;padding:10px 14px;background:#fafbfc;border:1px dashed var(--line);border-radius:8px;font-size:12.5px;color:var(--lt-grey)}
+.ai-badge{font-size:10px;font-weight:700;letter-spacing:.05em;padding:3px 8px;border-radius:99px;background:var(--mint);color:#fff;text-transform:uppercase}
+</style>
+</head>
+<body>
+
+<header>
+  <img src="https://app.urable.com/assets/images/urable_logo.svg" alt="Urable" style="height:34px;display:block;">
+  <span class="logo-sub">Data Import</span>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Import your customers</h2>
+    <p class="sub">Switching from another platform? Drop your customer list below. We'll detect the format, clean it up, remove duplicates, and get it ready for your Urable account &mdash; no technical setup needed.</p>
+
+    <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+      <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" onchange="handleFile(this.files[0],'customers')">
+      <div class="drop-icon">&#8679;</div>
+      <div class="drop-title">Drop your customer export here</div>
+      <div class="drop-hint">or click to browse &nbsp;&middot;&nbsp; .csv and .xlsx supported</div>
+      <div class="platforms">
+        <span class="platform-tag">Jobber</span>
+        <span class="platform-tag">Shopmonkey</span>
+        <span class="platform-tag">Fieldd</span>
+        <span class="platform-tag">Square</span>
+        <span class="platform-tag">EBMS</span>
+        <span class="platform-tag">GoHighLevel</span>
+        <span class="platform-tag">TintWiz</span>
+        <span class="platform-tag">Detail Bookie</span>
+        <span class="platform-tag">HubSpot</span>
+        <span class="platform-tag">Stripe</span>
+        <span class="platform-tag any">+ Any other system</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Import your products &amp; services</h2>
+    <p class="sub">Bring your service menu and product catalog too &mdash; including multi-price services (Coupe / Sedan / SUV pricing and similar). Variants are grouped automatically.</p>
+
+    <div class="drop-zone" id="dropZoneP" onclick="document.getElementById('fileInputP').click()">
+      <input type="file" id="fileInputP" accept=".csv,.xlsx,.xls" onchange="handleFile(this.files[0],'products')">
+      <div class="drop-icon">&#8679;</div>
+      <div class="drop-title">Drop your products / services export here</div>
+      <div class="drop-hint">or click to browse &nbsp;&middot;&nbsp; .csv and .xlsx supported</div>
+      <div class="platforms">
+        <span class="platform-tag">Jobber</span>
+        <span class="platform-tag">Square catalog</span>
+        <span class="platform-tag">Housecall Pro</span>
+        <span class="platform-tag any">+ Any services sheet</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Import your jobs history</h2>
+    <p class="sub">The full migration: past jobs with dates, vehicles, services, invoice amounts, and notes &mdash; so nothing is left behind in the old system. Requires the API import mode (customers and vehicles are created automatically as part of the job import).</p>
+
+    <div class="drop-zone" id="dropZoneJ" onclick="document.getElementById('fileInputJ').click()">
+      <input type="file" id="fileInputJ" accept=".csv,.xlsx,.xls" onchange="handleFile(this.files[0],'jobs')">
+      <div class="drop-icon">&#8679;</div>
+      <div class="drop-title">Drop your jobs export here</div>
+      <div class="drop-hint">or click to browse &nbsp;&middot;&nbsp; .csv and .xlsx supported</div>
+      <div class="platforms">
+        <span class="platform-tag">Urable jobs export</span>
+        <span class="platform-tag">Detail Bookie</span>
+        <span class="platform-tag any">More formats coming</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="statusCard" style="display:none;padding:16px 28px">
+    <div class="detected" id="detected" style="margin-top:0">
+      <span class="det-badge" id="detBadge"></span>
+      <span class="det-text" id="detText"></span>
+      <span class="det-stats" id="detStats"></span>
+    </div>
+    <div class="error-box" id="errorBox" style="margin-top:0"></div>
+  </div>
+
+  <!-- ── Manual / AI column mapper (fallback for unrecognized formats) ── -->
+  <div class="card" id="mapperCard">
+    <h2>Map your columns</h2>
+    <p class="sub">We didn't recognize this format automatically &mdash; no problem. Match your file's columns to Urable's fields below. We've pre-filled our best guesses (highlighted in green).</p>
+    <div class="ai-hint">
+      <span class="ai-badge">AI</span>
+      <span><strong>Coming soon:</strong> automatic mapping powered by Claude &mdash; the tool will read your file's structure and map it for you. <em>(Requires the hosted backend &mdash; see <code>claudeSuggestMapping()</code> in source.)</em></span>
+    </div>
+    <table class="map-table"><tbody id="mapRows"></tbody></table>
+    <div class="check-row">
+      <input type="checkbox" id="unmappedToNotes" checked>
+      <label for="unmappedToNotes">Add all unmapped columns to Notes (nothing gets lost)</label>
+    </div>
+    <div style="margin-top:18px">
+      <button class="btn" onclick="applyMapping()">Apply mapping</button>
+      <button class="btn secondary" onclick="reset()" style="margin-left:10px">Start over</button>
+    </div>
+  </div>
+
+  <!-- ── Results ── -->
+  <div class="card" id="results">
+    <h2>Preview <span style="font-weight:400;color:var(--lt-grey);font-size:13px" id="previewNote"></span></h2>
+    <div id="tableWrap"></div>
+
+    <div class="mode-tabs">
+      <button class="mode-tab active" id="tabCsv" onclick="setMode('csv')">Download CSV</button>
+      <button class="mode-tab" id="tabApi" onclick="setMode('api')">Import directly to Urable</button>
+    </div>
+
+    <!-- CSV mode -->
+    <div class="mode-panel active" id="panelCsv">
+      <p class="sub">Download the Urable-ready file and send it to your onboarding specialist, or upload it yourself if CSV import is enabled on your account.</p>
+      <div style="margin-top:14px">
+        <button class="btn" onclick="downloadCSV()">&#8681; Download Urable-ready CSV</button>
+        <button class="btn secondary" onclick="reset()" style="margin-left:10px">Start over</button>
+      </div>
+    </div>
+
+    <!-- API mode -->
+    <div class="mode-panel" id="panelApi">
+      <p class="sub">Import straight into your Urable account &mdash; customers <em>and</em> their vehicles. You'll need an API key: in the Urable app go to <strong>Settings &rarr; Developer &rarr; API Keys &rarr; Create API key</strong> (admin account required; grant <code>customers:write</code> and <code>items:write</code> scopes), then paste it here.</p>
+      <div class="api-row">
+        <input type="password" id="apiKey" placeholder="Paste your Urable API key" autocomplete="off">
+        <select id="apiEnv" style="padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff">
+          <option value="production">Production</option>
+          <option value="dev">Dev server</option>
+        </select>
+        <select id="apiIndustry" title="Industry for imported records" style="padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff">
+          <option value="vehicleCare">Vehicle Care</option>
+          <option value="lawnCare">Lawn Care</option>
+          <option value="flatGlass">Flat Glass</option>
+          <option value="other">Other</option>
+        </select>
+        <button class="btn secondary" onclick="testConnection()" id="testBtn">Test connection</button>
+      </div>
+      <div class="check-row">
+        <input type="checkbox" id="createVehicles" checked>
+        <label for="createVehicles">Also create vehicles (from the Item column) linked to each customer</label>
+      </div>
+      <div class="check-row">
+        <input type="checkbox" id="tagOrigin" checked>
+        <label for="tagOrigin">Tag each customer's origin as &ldquo;Imported from <span id="originName">previous system</span>&rdquo;</label>
+      </div>
+      <div class="check-row" id="catalogRow" style="display:none">
+        <input type="checkbox" id="createCatalog">
+        <label for="createCatalog">Add each historical service to the account's Products &amp; Services catalog. Leave unchecked to bill all imported jobs against a single generic &ldquo;Imported historical service&rdquo; entry instead &mdash; keeps an existing catalog clean; the real service names are preserved in each job's notes.</label>
+      </div>
+      <div style="margin-top:16px">
+        <button class="btn" id="importBtn" onclick="startImport()">Start import</button>
+      </div>
+      <div class="progress-wrap" id="progressWrap">
+        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+        <div class="progress-text" id="progressText"></div>
+      </div>
+      <div class="import-log" id="importLog"></div>
+      <div class="summary-box" id="summaryBox"></div>
+      <p class="api-note">Your API key stays in this browser tab &mdash; it is only ever sent to <code>app.urable.com</code> and is never stored. Imports run at a safe pace well under Urable's rate limit.</p>
+    </div>
+  </div>
+</main>
+
+<script>
+// ════════════════════════════════════════════════════════════════════════════
+//  URABLE DATA IMPORT — Stage 1 (hosted-ready)
+//  Modes: (1) CSV download (works today, zero backend)
+//         (2) Direct API import  → POST /v1/customers + /v1/items
+//  Fallback: manual column mapper for unrecognized formats
+//  Hook:     claudeSuggestMapping() — plug in Claude auto-mapping via backend
+// ════════════════════════════════════════════════════════════════════════════
+
+const HEADERS = ['First Name','Last Name','Type','Address Line 1','Address Line 2',
+                 'City','State','Postal Code','Country','Phone Number','Email','Notes','Item'];
+const PROD_HEADERS = ['Type','Category','Name','Description','Labels','Prices','Costs','Taxable','Checklist','Quantities'];
+const API_SERVERS = {
+  production: 'https://app.urable.com/api',
+  dev: 'https://dev-app.urable.com/api'
+};
+function apiBase(){
+  const sel=document.getElementById('apiEnv');
+  return API_SERVERS[sel?sel.value:'production'];
+}
+const INDUSTRIES=['vehicleCare','lawnCare','flatGlass','other'];
+function selectedIndustry(){
+  const el=document.getElementById('apiIndustry');
+  const v=el&&el.value;
+  return INDUSTRIES.includes(v)?v:'vehicleCare';
+}
+let currentKind='customers'; // 'customers' | 'products' | 'jobs'
+const JOBS_HEADERS=['Job #','Status','Customer','Vehicles','Line Items','Subtotal','Total','Paid','Start','Notes'];
+function activeHeaders(){ return currentKind==='products'?PROD_HEADERS:(currentKind==='jobs'?JOBS_HEADERS:HEADERS); }
+let jobsData=[]; // rich parsed job objects for the API pipeline
+
+function cl(v){ return v==null?'':String(v).trim(); }
+// Names that are only punctuation ("." "-" "?") are junk — drop them
+function cleanName(v){ let n=cl(v); return /^[^A-Za-z0-9]+$/.test(n)?'':n; }
+
+function cleanPhone(v, keepIntl){
+  let p = cl(v).replace(/^'+/,'');
+  if(keepIntl) return p;
+  let first = p.split(/[;,]/)[0].trim();
+  first = first.replace(/^\+?1/,'').trim();
+  return first;
+}
+
+function cleanEmail(v){
+  let e = cl(v);
+  if(!e) return '';
+  return e.split(/[;,]/)[0].trim();
+}
+
+function parseFielddAddress(addr){
+  if(!addr) return ['','','','','','United States'];
+  let parts = addr.split(',').map(s=>s.trim());
+  if(parts.length>=3){
+    let m = parts[parts.length-1].match(/^([A-Z]{2})\s+([\d\-]+)$/);
+    if(m) return [parts.slice(0,-2).join(', '),'',parts[parts.length-2],m[1],m[2],'United States'];
+  }
+  return [addr,'','','','','United States'];
+}
+
+function normalizeAusState(s){
+  const map={'Queensland':'QLD','New South Wales':'NSW','Victoria':'VIC',
+    'Western Australia':'WA','South Australia':'SA','Tasmania':'TAS',
+    'Northern Territory':'NT','Australian Capital Territory':'ACT'};
+  return map[s]||s;
+}
+
+function inferCountry(phone,state){
+  let p = cl(phone).replace(/^'+/,'');
+  if(p.startsWith('+61')) return 'Australia';
+  const au=['QLD','NSW','VIC','WA','SA','TAS','NT','ACT'];
+  if(au.includes(normalizeAusState(state))) return 'Australia';
+  return '';
+}
+
+// API requires ISO country codes (US, CA, AU, GB, NZ, IE)
+function isoCountry(c){
+  c=cl(c);
+  if(!c) return '';
+  if(/^[A-Za-z]{2}$/.test(c)) return c.toUpperCase();
+  const map={'united states':'US','usa':'US','united states of america':'US',
+    'australia':'AU','canada':'CA','united kingdom':'GB','uk':'GB',
+    'new zealand':'NZ','ireland':'IE'};
+  return map[c.toLowerCase()]||'';
+}
+
+function dedup(rows){
+  const n=rows.length;
+  const parent=Array.from({length:n},(_,i)=>i);
+  function find(x){while(parent[x]!==x){parent[x]=parent[parent[x]];x=parent[x];}return x;}
+  function union(a,b){a=find(a);b=find(b);if(a!==b)parent[b]=a;}
+  // Name guard: a shared phone/email only merges records whose names match
+  // (or where one name is blank). Households share home phones — "Larry" and
+  // "Yvonne Sprunger" on one number are two customers, not a duplicate.
+  const normName=r=>((r[0]||'')+' '+(r[1]||'')).trim().toLowerCase().replace(/\s+/g,' ');
+  function compatible(i,j){
+    const a=normName(rows[i]), b=normName(rows[j]);
+    return !a||!b||a===b;
+  }
+  function guardedUnion(i,j,idKind){
+    if(compatible(i,j)){ union(i,j); return; }
+    // Different people sharing an identifier — keep both, cross-note it
+    const na=(rows[j][0]+' '+rows[j][1]).trim(), nb=(rows[i][0]+' '+rows[i][1]).trim();
+    const tagA='Shares '+idKind+' with: '+na, tagB='Shares '+idKind+' with: '+nb;
+    if(na&&!(rows[i][11]||'').includes(tagA)) rows[i][11]=[rows[i][11],tagA].filter(Boolean).join(' | ');
+    if(nb&&!(rows[j][11]||'').includes(tagB)) rows[j][11]=[rows[j][11],tagB].filter(Boolean).join(' | ');
+  }
+  const phoneMap={}, emailMap={};
+  for(let i=0;i<n;i++){
+    const r=rows[i];
+    const ph=(r[9]||'').replace(/\D/g,'');
+    const em=(r[10]||'').trim().toLowerCase();
+    if(ph){if(phoneMap[ph]!==undefined)guardedUnion(i,phoneMap[ph],'phone');else phoneMap[ph]=i;}
+    if(em){if(emailMap[em]!==undefined)guardedUnion(i,emailMap[em],'email');else emailMap[em]=i;}
+  }
+  function mergeSeg(a,b){
+    const seen=new Set(),out=[];
+    for(const part of ((a||'')+' | '+(b||'')).split(' | ')){
+      const p=part.trim();if(p&&!seen.has(p.toLowerCase())){seen.add(p.toLowerCase());out.push(p);}
+    }
+    return out.join(' | ');
+  }
+  function richness(r){return r.filter(v=>(v||'').trim()).length;}
+  const groups={};
+  for(let i=0;i<n;i++){const root=find(i);(groups[root]=groups[root]||[]).push(i);}
+  const out=[];
+  for(const idxs of Object.values(groups)){
+    let base=[...rows[idxs[0]]];
+    for(let j=1;j<idxs.length;j++){
+      const other=rows[idxs[j]];
+      const winner=richness(base)>=richness(other)?base:[...other];
+      const loser =winner===base?other:base;
+      winner[12]=mergeSeg(winner[12],loser[12]);
+      const wPhone=(winner[9]||'').replace(/\D/g,'');
+      const lPhone=(loser[9]||'').replace(/\D/g,'');
+      if(!wPhone&&lPhone) winner[9]=loser[9];
+      else if(wPhone&&lPhone&&wPhone!==lPhone) loser[11]=mergeSeg(loser[11],'Alt phone: '+loser[9]);
+      if(!(winner[10]||'').trim()&&(loser[10]||'').trim()) winner[10]=loser[10];
+      else if((winner[10]||'').trim()&&(loser[10]||'').trim()&&winner[10].toLowerCase()!==loser[10].toLowerCase()) loser[11]=mergeSeg(loser[11],'Alt email: '+loser[10]);
+      winner[11]=mergeSeg(winner[11],loser[11]);
+      base=winner;
+    }
+    out.push(base);
+  }
+  return out;
+}
+
+// ─── Platform converters (unchanged from v1) ────────────────────────────────
+function convertJobber(data){
+  let out=[];
+  for(let r of data){
+    let first=cl(r['First Name']), last=cl(r['Last Name']);
+    if(!first&&!last) continue;
+    let isComp=cl(r['Is Company?']).toLowerCase()==='true';
+    let phone=cleanPhone(r['Main Phone #s'],false);
+    let email=cleanEmail(r['E-mails']);
+    let vehicle=cl(r["CFT[Vehicle's Year, Make, Model, Color?]"]);
+    let a1=cl(r['Service Street 1'])||cl(r['Billing Street 1']);
+    let a2=cl(r['Service Street 2'])||cl(r['Billing Street 2']);
+    let city=cl(r['Service City'])||cl(r['Billing City']);
+    let state=cl(r['Service State'])||cl(r['Billing State']);
+    let zip=cl(r['Service Zip code'])||cl(r['Billing Zip code']);
+    let country=cl(r['Service Country'])||cl(r['Billing Country']);
+    let np=[];
+    let lead=cl(r['Lead Source']),tags=cl(r['Tags']),comp=cl(r['Company Name']);
+    if(lead) np.push('Lead Source: '+lead);
+    if(tags) np.push('Tags: '+tags);
+    if(comp) np.push('Company: '+comp);
+    out.push([first,last,isComp?'Business':'Person',a1,a2,city,state,zip,country,
+              phone,email,np.join(' | '),vehicle]);
+  }
+  return dedup(out);
+}
+
+function convertShopmonkey(data){
+  let headers=data[2], out=[];
+  for(let i=3;i<data.length;i++){
+    let row=data[i];
+    let first=cl(row[0]),last=cl(row[1]);
+    if(!first&&!last) continue;
+    let phone=cleanPhone(row[2],false);
+    let email=cleanEmail(row[4]);
+    let company=cl(row[8]);
+    let addr1=cl(row[9]),addr2=cl(row[10]),city=cl(row[11]);
+    let state=cl(row[12]),zip=cl(row[13]);
+    let country=cl(row[14]).toUpperCase();
+    if(country==='US'||country==='USA') country='United States';
+    let note_val=cl(row[18]),referral=cl(row[7]),payterm=cl(row[24]),dot=cl(row[15]);
+    let np=[];
+    if(note_val) np.push(note_val);
+    if(referral) np.push('Referral: '+referral);
+    if(company) np.push('Company: '+company);
+    if(payterm) np.push('Payment Term: '+payterm);
+    if(dot) np.push('DOT#: '+dot);
+    out.push([first,last,company?'Business':'Person',addr1,addr2,city,state,zip,country,
+              phone,email,np.join(' | '),'']);
+  }
+  return dedup(out);
+}
+
+function convertFieldd(data){
+  let out=[];
+  for(let r of data){
+    let name=cl(r['Name']);
+    if(!name) continue;
+    let parts=name.split(' ');
+    let first=parts[0],last=parts.slice(1).join(' ');
+    let rawPhone=cl(r['Phone']).replace(/^'+/,'').replace(/^\+?/,'');
+    let digits=rawPhone.replace(/\D/g,'');
+    let phone=digits.length===11&&digits[0]==='1'?digits.slice(1):digits;
+    let email=cl(r['Email']);
+    let added=cl(r['Added On']);
+    let [a1,a2,city,state,zip,country]=parseFielddAddress(cl(r['Address']));
+    let notes=added?'Customer since: '+added:'';
+    out.push([first,last,'Person',a1,a2,city,state,zip,country,phone,email,notes,'']);
+  }
+  return dedup(out);
+}
+
+function convertSquare(data){
+  let out=[];
+  for(let r of data){
+    let first=cleanName(r['First Name']),last=cleanName(cl(r['Surname'])||cl(r['Last Name']));
+    if(!first&&!last) continue;
+    let phone=cl(r['Phone Number']).replace(/^'+/,'');
+    let email=cl(r['Email Address']);
+    let company=cl(r['Company Name']);
+    let addr1=cl(r['Street Address 1']);
+    let addr2=cl(r['Street Address 2']);
+    let city=cl(r['City']),state=normalizeAusState(cl(r['State']));
+    let zip=cl(r['Postal Code']);
+    let country=inferCountry(phone,state)||'';
+    if(company&&/^\d/.test(company)&&!addr1){addr1=company;company='';}
+    let np=[];
+    let nick=cl(r['Nickname']),src=cl(r['Creation Source']),lv=cl(r['Last Visit']);
+    if(company) np.push('Company: '+company);
+    if(nick) np.push('Nickname: '+nick);
+    if(src) np.push('Source: '+src);
+    let spend=parseFloat(cl(r['Total Spend']).replace(/[$,]/g,''));
+    if(spend>0) np.push('Total spent: $'+spend.toFixed(2));
+    let txns=parseInt(cl(r['Transaction Count'])||'0',10);
+    if(txns>0) np.push('Transactions: '+txns);
+    let fv=cl(r['First Visit']);
+    if(fv) np.push('First visit: '+fv);
+    if(lv) np.push('Last visit: '+lv);
+    let memo=cl(r['Memo']);
+    if(memo) np.push(memo);
+    out.push([first,last,company?'Business':'Person',addr1,addr2,city,state,zip,country,
+              phone,email,np.join(' | '),'']);
+  }
+  return dedup(out);
+}
+
+function convertEBMS(data){
+  const bizWords=['llc','inc','corp','co.','hardware','tire','auto','shop',
+    'service','solutions','group','associates','enterprises','company',
+    'industries','supply','construction','electric'];
+  function isBiz(first,last){
+    if(!first&&last) return true;
+    return bizWords.some(w=>(first+' '+last).toLowerCase().includes(w));
+  }
+  function isEmail(v){ return v.includes('@')&&v.split('@')[1].includes('.'); }
+  function isPhone(v){ let d=v.replace(/\D/g,''); return d.length>=7&&d.length<=11; }
+  let out=[];
+  for(let r of data){
+    let first=cl(r['First Name']),last=cl(r['Last Name']);
+    if(!first&&!last) continue;
+    let c1=cl(r['Contact 1']),c2=cl(r['Contact 2']),c3=cl(r['Contact 3']);
+    let c4=cl(r['Contact 4']),c5=cl(r['Contact 5']);
+    let phone=c1||(isPhone(c2)?c2:'');
+    let email=isEmail(c3)?c3:'';
+    let state=cl(r['State']);
+    let np=[];
+    if(c2&&c2!==phone) np.push('Alt contact: '+c2);
+    if(c3&&!isEmail(c3)) np.push('Contact 3: '+c3);
+    let c4low=c4.toLowerCase();
+    if(c4&&c4low!==first.toLowerCase()&&c4low!==last.toLowerCase()&&
+       c4low!==(first+' '+last).toLowerCase()) np.push('Contact: '+c4);
+    if(c5) np.push('Contact: '+c5);
+    out.push([first,last,isBiz(first,last)?'Business':'Person',
+      cl(r['Address 1']),cl(r['Address 2']),cl(r['City']),state,cl(r['Zip']),
+      state?'United States':'',phone,email,np.join(' | '),'']);
+  }
+  return dedup(out);
+}
+
+function convertGHL(data){
+  let out=[];
+  for(let r of data){
+    let first=cl(r['First Name']),last=cl(r['Last Name']);
+    let phone=cleanPhone(r['Phone'],false);
+    let email=cl(r['Email']);
+    let biz=cl(r['Business Name']);
+    let tags=cl(r['Tags']);
+    let created=cl(r['Created']).slice(0,10);
+    if(!first&&!last&&!phone&&!email) continue;
+    let np=[];
+    if(tags)    np.push('Tags: '+tags);
+    if(biz)     np.push('Business: '+biz);
+    if(created) np.push('Created: '+created);
+    out.push([first,last,biz?'Business':'Person',
+      '','','','','','',phone,email,np.join(' | '),'']);
+  }
+  return dedup(out);
+}
+
+function convertTintWiz(data){
+  const BIZ=['llc','inc','corp','co.','construction','lumber','outdoor','auto','shop',
+    'studio','spa','contractors','remodelers','enterprises','company','industries',
+    'supply','electric','services','solutions','group','associates','properties'];
+  function fixName(v){
+    v=cl(v); if(!v) return '';
+    if(v===v.toLowerCase()||v===v.toUpperCase())
+      return v.replace(/\b\w/g,c=>c.toUpperCase());
+    return v;
+  }
+  function isBiz(first,last,company){
+    if(company) return true;
+    let words=(first+' '+last).toLowerCase().split(/\s+/);
+    return BIZ.some(w=>words.includes(w));
+  }
+  function isVehicleName(first){ return /^\d{4}$/.test(first.trim()); }
+  let groups={}, order=[];
+  for(let r of data){
+    let phone=cl(r['phone']).replace(/\D/g,'');
+    if(phone.length===11&&phone[0]==='1') phone=phone.slice(1);
+    let first=fixName(r['firstname']),last=fixName(r['lastname']);
+    let email=cl(r['email']).toLowerCase();
+    let key=phone?('p:'+phone):('n:'+first.toLowerCase()+'|'+last.toLowerCase()+'|'+email);
+    if(!groups[key]){groups[key]=[];order.push(key);}
+    groups[key].push(r);
+  }
+  let out=[];
+  for(let key of order){
+    let group=groups[key];
+    let base=group.reduce((a,b)=>
+      Object.values(b).filter(v=>cl(v)).length > Object.values(a).filter(v=>cl(v)).length ? b : a
+    );
+    let first=fixName(base['firstname']),last=fixName(base['lastname']);
+    let company=fixName(base['company']);
+    let phone=cl(base['phone']).replace(/\D/g,'');
+    if(phone.length===11&&phone[0]==='1') phone=phone.slice(1);
+    let phone2=cl(base['phone2']).replace(/\D/g,'');
+    if(phone2.length===11&&phone2[0]==='1') phone2=phone2.slice(1);
+    let email=cl(base['email']),addr1=cl(base['address']),addr2=cl(base['address2']);
+    let city=fixName(base['city']),state=cl(base['state']),zip=cl(base['zipcode']);
+    let recType=cl(base['type']),tags=cl(base['tags']);
+    if(isVehicleName(first)){
+      if(!phone&&!email) continue;
+      first='';last='';
+    }
+    let biz=isBiz(first,last,company);
+    if(biz&&!company&&(first||last)){company=(first+' '+last).trim();first='';last='';}
+    let seenV=new Set(),vehicles=[];
+    for(let r of group){
+      let v=cl(r['vehicle']);
+      if(v&&!seenV.has(v.toLowerCase())){vehicles.push(v);seenV.add(v.toLowerCase());}
+    }
+    let item=vehicles.join(' | ');
+    let np=[];
+    if(company) np.push('Company: '+company);
+    if(tags) np.push('Tags: '+tags);
+    if(recType&&recType!=='Customer') np.push('Status: '+recType);
+    if(phone2) np.push('Alt phone: '+phone2);
+    out.push([first,last,biz?'Business':'Person',
+      addr1,addr2,city,state,zip,state?'United States':'',
+      phone,email,np.join(' | '),item]);
+  }
+  return out;
+}
+
+function convertDetailBookie(data){
+  let out=[];
+  for(let r of data){
+    let first=cl(r['first_name']), last=cl(r['last_name']);
+    if(!first&&!last) continue;
+    if(first==='first_name') continue; // repeated header row
+    let company=cl(r['company_name']);
+    // Phone preference: mobile > home > work; extras to notes
+    let phones=['mobile_phone','home_phone','work_phone']
+      .map(k=>cl(r[k]).replace(/\D/g,''))
+      .map(p=>p.length===11&&p[0]==='1'?p.slice(1):p)
+      .filter(p=>p);
+    let phone=phones[0]||'';
+    let email=cleanEmail(r['email']);
+    let a1=cl(r['address_line_1']),a2=cl(r['address_line_2']);
+    let city=cl(r['address_city']),state=cl(r['address_state_code']),zip=cl(r['address_zip_code']);
+    let country=(state||phone)?'United States':'';
+    // Vehicles: newline-separated, drop blanks and the "(and more…)" marker
+    let seenV=new Set(),vehicles=[];
+    for(let v of cl(r['vehicles']).split(/\n/)){
+      v=v.trim();
+      if(!v||v.toLowerCase().startsWith('(and more')) continue;
+      if(!seenV.has(v.toLowerCase())){seenV.add(v.toLowerCase());vehicles.push(v);}
+    }
+    let np=[];
+    if(company) np.push('Company: '+company);
+    let rev=parseFloat(cl(r['revenue'])||'0');
+    if(rev>0) np.push('Total spent: $'+rev.toFixed(2));
+    let jobs=parseInt(cl(r['completed_jobs'])||'0',10);
+    if(jobs>0) np.push('Completed jobs: '+jobs);
+    let created=cl(r['ts_created']).split(' ')[0];
+    if(created) np.push('Customer since: '+created);
+    let atype=cl(r['address_type']);
+    if(atype&&atype!=='home') np.push('Address type: '+atype);
+    let anotes=cl(r['address_notes']);
+    if(anotes) np.push('Address notes: '+anotes);
+    for(let i=1;i<phones.length;i++) np.push('Alt phone: '+phones[i]);
+    out.push([first,last,company?'Business':'Person',a1,a2,city,state,zip,country,
+              phone,email,np.join(' | '),vehicles.join(' | ')]);
+  }
+  return dedup(out);
+}
+
+function splitName(name){
+  const parts=cl(name).split(/\s+/);
+  return [parts[0]||'', parts.slice(1).join(' ')];
+}
+function usPhone(v){
+  let d=cl(v).replace(/\.0$/,'').replace(/\D/g,'');
+  if(d.length===11&&d[0]==='1') d=d.slice(1);
+  return d;
+}
+
+// Vehicle-name normalization for cross-file matching. Different exports from
+// the same system describe one vehicle differently ("Silver Toyota Sequia"
+// vs "toyota sequia") — strip colors/years/punctuation so they can meet.
+const VEH_COLORS=['white','black','silver','gray','grey','red','blue','green','yellow','orange','brown','tan','gold','maroon','burgundy','purple','pink','beige','bronze','charcoal'];
+function normVeh(s){
+  let words=String(s||'').toLowerCase().replace(/[^a-z0-9\s]/g,' ').split(/\s+/).filter(Boolean);
+  words=words.filter(w=>!VEH_COLORS.includes(w)&&!/^(19|20)\d{2}$/.test(w));
+  return words.join(' ');
+}
+
+function convertHubSpot(data){
+  let out=[];
+  for(let r of data){
+    let first=cl(r['First Name']),last=cl(r['Last Name']);
+    let phone=usPhone(r['Phone Number']),email=cleanEmail(r['Email']);
+    if(!first&&!last&&!phone&&!email) continue;
+    let np=[];
+    let lead=cl(r['Lead Status']),created=cl(r['Create Date']).split(' ')[0];
+    let addlEmail=cl(r['Additional email addresses']);
+    if(lead) np.push('Lead status: '+lead);
+    if(created) np.push('Created: '+created);
+    if(addlEmail) np.push('Alt email: '+addlEmail);
+    out.push([first,last,'Person','','','','','','',phone,email,np.join(' | '),'']);
+  }
+  return dedup(out);
+}
+
+function convertStripe(data){
+  let out=[];
+  for(let r of data){
+    let [first,last]=splitName(r['Name']);
+    let email=cleanEmail(r['Email']);
+    if(!first&&!email) continue;
+    let np=[];
+    let spend=parseFloat(cl(r['Total Spend'])||'0');
+    if(spend>0) np.push('Total spent: $'+spend.toFixed(2));
+    let pays=parseInt(cl(r['Payment Count'])||'0',10);
+    if(pays>0) np.push('Payments: '+pays);
+    let created=cl(r['Created (UTC)']).split(' ')[0];
+    if(created) np.push('Customer since: '+created);
+    let desc=cl(r['Description']);
+    if(desc) np.push(desc);
+    out.push([first,last,'Person','','','','','','',
+      '',email,np.join(' | '),'']);
+  }
+  return dedup(out);
+}
+
+function convertSquareAlt(data){
+  // Square customer export variant: single Name column + "Instant Profile"
+  let out=[];
+  for(let r of data){
+    let [first,last]=splitName(r['Name']);
+    let phone=usPhone(r['Phone Number']);
+    let email=cleanEmail(r['Email Address']);
+    if(!first&&!phone&&!email) continue;
+    let a1=cl(r['Street Address 1']),a2=cl(r['Street Address 2']);
+    let city=cl(r['City']),state=cl(r['State']),zip=cl(r['Postal Code']);
+    let country=(state||zip||phone.length===10)?'United States':'';
+    let np=[];
+    let memo=cl(r['Memo']);
+    if(memo) np.push(memo);
+    out.push([first,last,'Person',a1,a2,city,state,zip,country,phone,email,np.join(' | '),'']);
+  }
+  return dedup(out);
+}
+
+function convertJobsExport(data){
+  // Jobs-style export (e.g. Urable jobs list): one row per job → unique customers
+  let groups={}, order=[];
+  for(let r of data){
+    let name=cl(r['Customer Name']);
+    let phone=usPhone(r['Customer Phone Number']);
+    let email=cleanEmail(r['Customer Email']);
+    if(!name&&!phone&&!email) continue;
+    // Identifier + name key: household members sharing a phone stay separate
+    let key=(phone?('p:'+phone):(email?('e:'+email.toLowerCase()):'n:'))+'|'+name.toLowerCase().replace(/\s+/g,' ');
+    if(!groups[key]){groups[key]={rows:[],name:'',phone:phone,email:''};order.push(key);}
+    let g=groups[key];
+    g.rows.push(r);
+    if(name.length>cl(g.name).length) g.name=name;
+    if(email&&!g.email) g.email=email;
+  }
+  let out=[];
+  for(let key of order){
+    let g=groups[key];
+    let [first,last]=splitName(g.name);
+    if(first&&first===first.toLowerCase()) first=first.replace(/\b\w/g,c=>c.toUpperCase());
+    if(last&&last===last.toLowerCase()) last=last.replace(/\b\w/g,c=>c.toUpperCase());
+    let np=[];
+    let jobs=g.rows.length;
+    np.push('Jobs on record: '+jobs);
+    let dates=g.rows.map(r=>cl(r['Start']).split(' ')[0]).filter(Boolean).sort();
+    if(dates.length) np.push('Last job: '+dates[dates.length-1]);
+    let origin=cl(g.rows[0]['Customer Origin']);
+    if(origin) np.push('Origin: '+origin);
+    out.push([first,last,'Person','','','','','','',g.phone,g.email,np.join(' | '),'']);
+  }
+  return dedup(out);
+}
+
+function convertShopmonkeyFleet(data){
+  // Shopmonkey fleet/companies export: headers on row 3 (index 2), all businesses
+  let headers=(data[2]||[]).map(cl), out=[];
+  const ix=name=>headers.findIndex(h=>h.toLowerCase().startsWith(name));
+  const c={name:ix('company name'),phone:ix('primary phone'),phone2:ix('additional phones'),
+    email:ix('primary email'),email2:ix('additional emails'),ref:ix('referral source'),
+    note:ix('note'),a1:ix('address 1'),a2:ix('address 2'),city:ix('city'),
+    state:ix('state'),zip:ix('zip'),country:ix('country'),dot:ix('dot')};
+  const g=(row,k)=>c[k]>=0?cl(row[c[k]]):'';
+  for(let i=3;i<data.length;i++){
+    const row=data[i];
+    const name=g(row,'name');
+    if(!name) continue;
+    const phone=usPhone(g(row,'phone'));
+    const email=cleanEmail(g(row,'email'));
+    let np=[];
+    const ref=g(row,'ref'),note=g(row,'note'),dot=g(row,'dot');
+    const phone2=usPhone(g(row,'phone2')),email2=cleanEmail(g(row,'email2'));
+    if(note) np.push(note);
+    if(ref) np.push('Referral: '+ref);
+    if(dot) np.push('DOT#: '+dot);
+    if(phone2) np.push('Alt phone: '+phone2);
+    if(email2) np.push('Alt email: '+email2);
+    out.push([name,'','Business',g(row,'a1'),g(row,'a2'),g(row,'city'),g(row,'state'),g(row,'zip'),
+      g(row,'country'),phone,email,np.join(' | '),'']);
+  }
+  return dedup(out);
+}
+
+const VEHICLE_MAKES=['chevy','chevrolet','ford','lexus','honda','toyota','bmw','mercedes','audi',
+  'tesla','dodge','ram','gmc','jeep','kia','hyundai','nissan','subaru','mazda','vw','volkswagen',
+  'cadillac','lincoln','buick','chrysler','porsche','acura','infiniti','volvo','mini','corvette',
+  'silverado','tahoe','tacoma','tundra','civic','accord','camry','mustang','wrangler','polaris'];
+function looksLikeVehicle(s){
+  const low=' '+s.toLowerCase()+' ';
+  if(/\b(19|20)\d{2}\b/.test(s)) return true;
+  return VEHICLE_MAKES.some(m=>low.includes(' '+m+' ')||low.includes(' '+m));
+}
+
+function convertBillShipExport(data){
+  // Billing/shipping-style export (QuickBooks-like). Duplicate header names
+  // (billing + shipping City/State) force positional parsing.
+  // 0 Name, 1 Email, 2 Phone, 3 Tax, 4-6 Address1-3, 7 City, 8 State, 9 Zip, 10 Country
+  const BIZ=['llc','inc','corp','co.','auto','shop','detailing','towing','body','collision',
+    'motors','automotive','services','solutions','group','company','fleet','garage','tire','plumbing'];
+  let out=[];
+  for(let i=1;i<data.length;i++){
+    const r=(data[i]||[]).map(cl);
+    let name=r[0]||'';
+    if(!name) continue;
+    let vehicle='', extraNote='';
+    if(name.includes(' - ')){
+      const idx=name.indexOf(' - ');
+      const suffix=name.slice(idx+3).trim();
+      const base=name.slice(0,idx).trim();
+      if(looksLikeVehicle(suffix)){ vehicle=suffix; name=base; }
+      else if(suffix){ extraNote=suffix; name=base; }
+    }
+    const words=name.toLowerCase().split(/\s+/);
+    const isBiz=BIZ.some(w=>words.includes(w));
+    let [first,last]=isBiz?[name,'']:splitName(name);
+    const email=cleanEmail(r[1]), phone=usPhone(r[2]);
+    const a1=r[4]||'', a2=[r[5],r[6]].filter(Boolean).join(', ');
+    const city=r[7]||'', state=r[8]||'', zip=r[9]||'', country=r[10]||'';
+    let np=[];
+    if(extraNote) np.push(extraNote);
+    if(r[3]) np.push('Tax: '+r[3]);
+    out.push([first,last,isBiz?'Business':'Person',a1,a2,city,state,zip,country,
+      phone,email,np.join(' | '),vehicle]);
+  }
+  return dedup(out);
+}
+
+// ─── Products & services converters ─────────────────────────────────────────
+function cleanPrice(v){
+  let n=parseFloat(cl(v).replace(/[$,]/g,''));
+  return isNaN(n)?null:n;
+}
+// Price format for the CSV output. Urable's importer recognizes $-formatted
+// values; flip PRICE_DOLLAR to false to emit plain numbers instead.
+const PRICE_DOLLAR=true;
+function fmtPrice(n){ return (PRICE_DOLLAR?'$':'')+n.toFixed(2); }
+
+function convertUrableTemplateFlex(data){
+  // Urable import template + older single-price variants (Price/Cost singular)
+  let out=[];
+  for(const r of data){
+    const name=cl(r['Name']);
+    if(!name) continue;
+    const type=cl(r['Type']).toLowerCase()==='product'?'product':'service';
+    const desc=cl(r['Description']).replace(/[\u2028\u2029]/g,' ').replace(/\s*\n\s*/g,' ');
+    let labels=cl(r['Labels']||'');
+    let prices=cl(r['Prices']||r['Price']||'');
+    let costs=cl(r['Costs']||r['Cost']||'');
+    // Some sheets jam export-style combined pricing into the single Price
+    // cell: "2 Row Vehicle: $180.00, 3 Row Vehicle: $225.00" → split it
+    if(!labels&&/[^,:]+:\s*\$/.test(prices)){
+      const lp=parseLabeledPrices(prices);
+      if(lp.values.length){
+        labels=lp.labels.some(l=>l)?lp.labels.map((l,i)=>l||('Option '+(i+1))).join('; '):'';
+        prices=lp.values.map(fmtPrice).join('; ');
+      }
+    }
+    // normalize each price segment to $X.XX (idempotent)
+    const fmtSeg=s=>s?s.split(';').map(x=>{const v=cleanPrice(x);return v===null?'':fmtPrice(v);}).filter(Boolean).join('; '):'';
+    prices=fmtSeg(prices); costs=fmtSeg(costs);
+    // Quote-based services legitimately have no price → import as $0.00
+    if(!prices) prices=fmtPrice(0);
+    out.push([type,cl(r['Category']),name,desc,labels,prices,costs,
+      cl(r['Taxable']).toLowerCase()==='true'?'true':'false',
+      cl(r['Checklist']||''),cl(r['Quantities']||'')]);
+  }
+  return out;
+}
+
+function convertNameVariantPrice(data){
+  // Two-dimension variants: "Ceramic Coating (Sedan)" + explanation "3 Year"
+  // → base "Ceramic Coating", label "Sedan – 3 Year"
+  let groups={}, order=[];
+  for(const r of data){
+    let name=cl(r['name']||r['Name']);
+    if(!name) continue;
+    const price=cleanPrice(r['price']||r['Price']);
+    if(price===null) continue;
+    const tier=cl(r['explanation']||r['variant']||r['option']||'');
+    const desc=cl(r['description']||r['Description']).replace(/\s*\n\s*/g,' ');
+    let base=name, dim1='';
+    const pm=name.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
+    if(pm){ base=pm[1].trim(); dim1=pm[2].trim(); }
+    const label=[dim1,tier].filter(Boolean).join(' – ');
+    const key=base.toLowerCase();
+    if(!groups[key]){groups[key]={base,desc,labels:[],prices:[]};order.push(key);}
+    const g=groups[key];
+    if(!g.desc&&desc) g.desc=desc;
+    g.labels.push(label);
+    g.prices.push(price);
+  }
+  let out=[];
+  for(const key of order){
+    const g=groups[key];
+    const multi=g.prices.length>1;
+    out.push(['service','',g.base,g.desc,
+      multi?g.labels.map((l,i)=>l||('Option '+(i+1))).join('; '):'',
+      g.prices.map(fmtPrice).join('; '),'','true','','']);
+  }
+  return out;
+}
+
+function convertHCPPricebook(data){
+  // Housecall Pro pricebook export. Some exports scatter description bullets
+  // onto their own rows (text lands in the first column) — attach to previous.
+  let out=[], seen=new Set(), extras=[];
+  function flushExtras(){
+    if(out.length&&extras.length){
+      out[out.length-1][3]=[out[out.length-1][3],extras.join(' ')].filter(Boolean).join(' ');
+    }
+    extras=[];
+  }
+  for(let r of data){
+    let name=cl(r['name']);
+    if(!name){
+      // continuation row: whatever text exists goes to the previous description
+      const txt=Object.values(r).map(cl).filter(Boolean).join(' ');
+      if(txt) extras.push(txt);
+      continue;
+    }
+    flushExtras();
+    // Quote-based services legitimately have no price → import as $0.00
+    let price=cleanPrice(r['price']);
+    if(price===null) price=0;
+    let cat=cl(r['category'])||'';
+    const sub=cl(r['subcategory_1']||'');
+    if(sub) cat=cat?(cat+' - '+sub):sub;
+    let desc=cl(r['description']).replace(/\s*\n\s*/g,' ');
+    let cost=cleanPrice(r['cost']);
+    let taxable=cl(r['taxable']).toLowerCase()==='true'?'true':'false';
+    let key=(name+'|'+desc+'|'+price+'|'+cat).toLowerCase();
+    if(seen.has(key)) continue;
+    seen.add(key);
+    out.push(['service',cat,name,desc,'',fmtPrice(price),(cost&&cost>0)?fmtPrice(cost):'',taxable,'','']);
+  }
+  flushExtras();
+  return out;
+}
+
+function convertSquareCatalog(data){
+  // Square item library export: one row per variation → group by Item Name
+  let groups={}, order=[];
+  const taxKey=Object.keys(data[0]||{}).find(k=>k.startsWith('Tax '));
+  for(let r of data){
+    const name=cl(r['Item Name']);
+    if(!name) continue;
+    if(cl(r['Archived'])==='Y') continue;
+    const price=cleanPrice(r['Price']);
+    if(price===null) continue;
+    const key=name.toLowerCase();
+    if(!groups[key]){groups[key]={name,cat:cl(r['Categories']),desc:cl(r['Description']).replace(/\s*\n\s*/g,' '),
+      type:/physical good/i.test(cl(r['Item Type']))?'product':'service',
+      taxable:taxKey?(cl(r[taxKey])==='Y'?'true':'false'):'true',labels:[],prices:[]};order.push(key);}
+    const g=groups[key];
+    let label=cl(r['Variation Name']);
+    if(label==='Regular') label=cl(r['Option Value 1'])||'';
+    g.labels.push(label);
+    g.prices.push(price);
+  }
+  let out=[];
+  for(const key of order){
+    const g=groups[key];
+    const multi=g.prices.length>1;
+    out.push([g.type,g.cat,g.name,g.desc,
+      multi?g.labels.map((l,i)=>l||('Option '+(i+1))).join('; '):'',
+      g.prices.map(fmtPrice).join('; '),'',g.taxable,'','']);
+  }
+  return out;
+}
+
+function convertJobberProducts(data){
+  // Jobber Products and Services export: variants as "Name (Car)" rows →
+  // group same base name + description into one row with labels
+  let groups={}, order=[];
+  for(let r of data){
+    const rawName=cl(r['Name']);
+    if(!rawName) continue;
+    if(cl(r['Active']).toLowerCase()==='false') continue;
+    const price=cleanPrice(r['Unit Price']);
+    if(price===null) continue;
+    let base=rawName, label='';
+    const m=rawName.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
+    if(m){ base=m[1].trim(); label=m[2].trim(); }
+    const desc=cl(r['Description']).replace(/\s*\n\s*/g,' ');
+    const type=/product/i.test(cl(r['Category']))?'product':'service';
+    const key=(base+'|'+desc).toLowerCase();
+    if(!groups[key]){groups[key]={base,desc,type,taxable:cl(r['Taxable']).toLowerCase()==='true'?'true':'false',labels:[],prices:[]};order.push(key);}
+    groups[key].labels.push(label);
+    groups[key].prices.push(price);
+  }
+  let out=[];
+  for(const key of order){
+    const g=groups[key];
+    const multi=g.prices.length>1;
+    out.push([g.type,'',g.base,g.desc,
+      multi?g.labels.map((l,i)=>l||('Option '+(i+1))).join('; '):'',
+      g.prices.map(fmtPrice).join('; '),'',g.taxable,'','']);
+  }
+  return out;
+}
+
+// Parse "Label: $price, Label: $price" strings (Urable export format)
+function parseLabeledPrices(s){
+  s=cl(s);
+  if(!s) return {labels:[],values:[]};
+  // Split on commas that precede a "something: $amount" chunk
+  const parts=s.split(/,\s*(?=[^,]+?:\s*\$)/);
+  const labels=[],values=[];
+  for(const part of parts){
+    const m=part.match(/^(.*?):\s*\$?([\d,]+(?:\.\d+)?)\s*$/);
+    if(m){ labels.push(m[1].trim()); values.push(parseFloat(m[2].replace(/,/g,''))); }
+    else { const v=cleanPrice(part); if(v!==null){ labels.push(''); values.push(v); } }
+  }
+  return {labels,values};
+}
+
+function convertUrableProductsExport(data){
+  // Export from a Urable account (productsServices.csv) → import template
+  let out=[];
+  for(let r of data){
+    let name=cl(r['Name']);
+    if(!name) continue;
+    const {labels,values}=parseLabeledPrices(r['Prices']);
+    if(!values.length) continue;
+    const costs=parseLabeledPrices(r['Costs']);
+    const multi=values.length>1||labels.some(l=>l);
+    out.push([
+      cl(r['Type'])||'service',
+      cl(r['Category']),
+      name,
+      cl(r['Description']).replace(/\s*\n\s*/g,' '),
+      multi?labels.map((l,i)=>l||('Option '+(i+1))).join('; '):'',
+      values.map(fmtPrice).join('; '),
+      costs.values.length===values.length?costs.values.map(fmtPrice).join('; '):
+        (costs.values.length===1&&values.length===1?fmtPrice(costs.values[0]):''),
+      cl(r['Taxable']).toLowerCase()==='true'?'true':'false',
+      cl(r['Checklist']),
+      cl(r['Inventory'])
+    ]);
+  }
+  return out;
+}
+
+// Variant prefixes like "Small Vehicle ..." / "XL+ Vehicle ..." get grouped
+const SIZE_PREFIX=/^(Small|Medium|Large|X-?Large|XL\+?|XXL|Compact|Mid-?Size|Full-?Size)\s+(Vehicle\s+)?(.+)$/i;
+
+function convertGenericProductsSheet(data, cols){
+  // cols: {name, category, price, description, duration} → source column names
+  // Handles messy sheets: service rows have category+price; overflow rows
+  // (description bullets in the name column) attach to the previous service.
+  let items=[], currentCat='';
+  for(let r of data){
+    let name=cl(r[cols.name]);
+    let price=cleanPrice(r[cols.price]);
+    let cat=cols.category?cl(r[cols.category]):'';
+    let desc=cols.description?cl(r[cols.description]).replace(/\s*\n\s*/g,' '):'';
+    if(name&&price!==null){
+      items.push({name,cat:cat||currentCat,price,desc,extra:[]});
+    } else if(name&&!desc&&price===null&&name.split(/\s+/).length<=4){
+      // A name with no price and no description = a category header row
+      currentCat=name;
+    } else if(items.length&&(name||desc)){
+      // continuation row → append to previous service's description
+      let txt=(name||desc).trim();
+      if(txt) items[items.length-1].extra.push(txt);
+    }
+  }
+  for(const it of items){
+    if(it.extra.length) it.desc=[it.desc,it.extra.join(' ')].filter(Boolean).join(' ');
+  }
+  // Group variants: "(Car)"-suffixed and size-prefixed names collapse to one row
+  let groups={}, order=[];
+  for(const it of items){
+    let base=it.name, label='';
+    // Size prefix wins over parentheses: in "Small Vehicle Express Detail
+    // (V2 Silver)" the size is the variant and "(V2 Silver)" is the package
+    const m=it.name.match(SIZE_PREFIX);
+    if(m&&m[3]){ label=(m[1]+(m[2]?' '+m[2].trim():'')).trim(); base=m[3].trim(); }
+    else {
+      const pm=it.name.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
+      if(pm){ base=pm[1].trim(); label=pm[2].trim(); }
+    }
+    const key=(base+'|'+it.cat).toLowerCase();
+    if(!groups[key]){groups[key]={base,cat:it.cat,desc:it.desc,labels:[],prices:[]};order.push(key);}
+    const g=groups[key];
+    // Variant rows often each carry a fragment of one continuous description —
+    // merge unique fragments instead of keeping only the first
+    if(it.desc&&!g.desc.includes(it.desc)) g.desc=[g.desc,it.desc].filter(Boolean).join(' ');
+    g.labels.push(label);
+    g.prices.push(it.price);
+  }
+  let out=[];
+  for(const key of order){
+    const g=groups[key];
+    const multi=g.prices.length>1;
+    out.push(['service',g.cat,g.base,g.desc,
+      multi?g.labels.map((l,i)=>l||('Option '+(i+1))).join('; '):'',
+      g.prices.map(fmtPrice).join('; '),
+      '','true','','']);
+  }
+  return out;
+}
+
+// ─── Jobs import (Urable jobs export format) ────────────────────────────────
+function moneyCents(v){
+  const n=cleanPrice(v);
+  return n===null?0:Math.round(n*100);
+}
+function parseJobDate(v){
+  v=cl(v).replace(',',' ');
+  if(!v) return null;
+  const t=new Date(v).getTime();
+  return isNaN(t)?null:t;
+}
+
+function parseJobsExport(data){
+  const jobs=[];
+  for(const r of data){
+    const status=cl(r['Status']).toLowerCase();
+    if(!cl(r['Customer Name'])&&!cl(r['Customer Phone Number'])&&!cl(r['Customer Email'])) continue;
+    const vehicles=cl(r['Items'])?cl(r['Items']).split(/,\s*/).map(cl).filter(Boolean):[];
+    const vins=cl(r['VINs'])?cl(r['VINs']).split(/,\s*/).map(cl):[];
+    const plates=cl(r['License Plates'])?cl(r['License Plates']).split(/,\s*/).map(cl):[];
+    const lineItems=cl(r['Line Items'])?cl(r['Line Items']).split(/,(?![^()]*\))\s*/).map(cl).filter(Boolean):[];
+    const subtotal=moneyCents(r['Subtotal']);
+    const adjRaw=cl(r['Adjustments']);
+    const adjustments=[];
+    if(adjRaw){
+      const {labels,values}=parseLabeledPrices(adjRaw);
+      values.forEach((v,i)=>adjustments.push({name:labels[i]||'Imported adjustment',cents:Math.round(v*100)}));
+    }
+    const discount=moneyCents(r['Discount Amount']);
+    if(discount>0&&!adjustments.length) adjustments.push({name:'Imported discount',cents:discount});
+    // Preserve unrepresentable history in the job notes
+    const noteBits=[];
+    if(cl(r['Notes'])) noteBits.push(cl(r['Notes']));
+    const paid=moneyCents(r['Amount Paid']);
+    const payStatus=cl(r['Payment Status']);
+    if(payStatus) noteBits.push('Historical payment status: '+payStatus+(paid?' ($'+(paid/100).toFixed(2)+' paid)':''));
+    const tip=moneyCents(r['Tip']);
+    if(tip>0) noteBits.push('Historical tip: $'+(tip/100).toFixed(2));
+    const tax=moneyCents(r['Tax Amount']);
+    if(tax>0) noteBits.push('Historical tax ('+cl(r['Tax Rate'])+'): $'+(tax/100).toFixed(2));
+    jobs.push({
+      num:cl(r['Job #']),
+      status:['quote','scheduled','in progress','completed','archived','canceled'].includes(status)?status:'completed',
+      type:cl(r['Type']).toLowerCase()==='shop'?'shop':'field',
+      industry:['vehicleCare','lawnCare','flatGlass','other'].includes(cl(r['Industry']))?cl(r['Industry']):null,
+      title:cl(r['Title']),
+      customer:{
+        name:cl(r['Customer Name']),
+        email:cleanEmail(r['Customer Email']),
+        phone:usPhone(r['Customer Phone Number']),
+        a1:cl(r['Address Line 1']),a2:cl(r['Address Line 2']),
+        city:cl(r['City']),state:cl(r['State']),zip:cl(r['Postal Code']),country:cl(r['Country'])
+      },
+      vehicles,vins,plates,
+      lineItems,subtotal,
+      perLineCents: lineItems.length?Math.floor(subtotal/lineItems.length):0,
+      firstLineCents: lineItems.length?subtotal-Math.floor(subtotal/lineItems.length)*(lineItems.length-1):0,
+      adjustments,
+      start:parseJobDate(r['Start']),end:parseJobDate(r['End']),
+      dropOff:parseJobDate(r['Drop off']),
+      completedAt:parseJobDate(r['Completed']),
+      updatedAt:parseJobDate(r['Modified']),
+      allDay:cl(r['All day']).toLowerCase()==='true',
+      taxed:tax>0,
+      notes:noteBits.join(' | '),
+      total:moneyCents(r['Total']),paid
+    });
+  }
+  return jobs;
+}
+
+function convertDetailBookieJobs(data){
+  // Detail Bookie all-jobs export → same normalized job shape as parseJobsExport
+  const STATUS={'ESTIMATE':'quote','BOOKING':'quote','UNCONFIRMED':'quote',
+    'SCHEDULED':'scheduled','CHECKEDIN':'in progress','INPROGRESS':'in progress',
+    'PICKUP':'in progress','COMPLETE':'completed','CANCELLED':'canceled'};
+  const jobs=[]; let skippedAnon=0;
+  for(const r of data){
+    if(cl(r['first_name'])==='first_name') continue; // repeated header row
+    // Anonymous estimate stubs would pollute the customer list — skip them
+    if(cl(r['first_name'])==='Anonymous'&&/noreply@/i.test(cl(r['email']))){ skippedAnon++; continue; }
+    const first=cl(r['first_name']),last=cl(r['last_name']);
+    if(!first&&!last) continue;
+    const packages=['combined_package','interior_package','exterior_package']
+      .map(c=>cl(r[c])).filter(Boolean);
+    const chargedCents=moneyCents(r['charged']);
+    const paidCents=moneyCents(r['paid']);
+    const phone=['phone_mobile','phone_work','phone_home'].map(k=>usPhone(r[k])).find(p=>p)||'';
+    const noteBits=[];
+    const pay=cl(r['pay_status']);
+    if(pay) noteBits.push('Historical payment status: '+pay+(paidCents?' ($'+(paidCents/100).toFixed(2)+' paid)':''));
+    const vtype=cl(r['type']);
+    if(vtype) noteBits.push('Vehicle type: '+vtype);
+    const company=cl(r['company_name']);
+    if(company) noteBits.push('Company: '+company);
+    const start=parseJobDate(cl(r['dropoff']).replace(/(\.\d+)?([+-]\d{2})$/,''))||parseJobDate(cl(r['created_at']).split('.')[0]);
+    let end=parseJobDate(cl(r['pickup']).replace(/(\.\d+)?([+-]\d{2})$/,''));
+    const mins=parseInt(cl(r['minutes_needed'])||'0',10);
+    if(!end&&start&&mins>0) end=start+mins*60000;
+    // completion timestamp: pickup time, else last update
+    const compTs=end||parseJobDate(cl(r['updated_at']).split('.')[0]);
+    const marine=/marine|boat/i.test(cl(r['category']));
+    jobs.push({
+      num:cl(r['job_id']),
+      status:STATUS[cl(r['job_status'])]||'completed',
+      type:'shop',
+      title:'',
+      customer:{ name:(first+' '+last).trim(), email:cleanEmail(r['email']), phone:phone,
+        a1:cl(r['address1']),a2:cl(r['address2']),city:cl(r['city']),
+        state:cl(r['state_code']),zip:cl(r['zip_code']),country:cl(r['country_code']) },
+      vehicles:cl(r['vehicle'])?[cl(r['vehicle'])]:[],vins:[],plates:[],
+      itemType:marine?'marine':'automotive',
+      completedAt:compTs,
+      updatedAt:parseJobDate(cl(r['updated_at']).split('.')[0]),
+      lineItems:packages.length?packages:['Imported service'],
+      subtotal:chargedCents,
+      perLineCents:packages.length?Math.floor(chargedCents/packages.length):chargedCents,
+      firstLineCents:packages.length?chargedCents-Math.floor(chargedCents/packages.length)*(packages.length-1):chargedCents,
+      adjustments:[],
+      start:start,end:end,dropOff:start,allDay:false,
+      taxed:false,
+      notes:noteBits.join(' | '),
+      total:chargedCents,paid:paidCents
+    });
+  }
+  jobs._skippedAnon=skippedAnon;
+  return jobs;
+}
+
+function jobsPreviewRows(jobs){
+  return jobs.map(j=>[j.num,j.status,j.customer.name,j.vehicles.join(' | '),
+    j.lineItems.join(' | '),'$'+(j.subtotal/100).toFixed(2),'$'+(j.total/100).toFixed(2),
+    '$'+(j.paid/100).toFixed(2),j.start?new Date(j.start).toLocaleDateString():'',j.notes]);
+}
+
+// ─── Platform detection ─────────────────────────────────────────────────────
+function detectPlatform(filename, headers, rawRows){
+  let fn=filename.toLowerCase();
+  // Already in Urable template format (e.g. cleaned by CS/Claude) → pass through
+  const hl=headers.map(x=>cl(x).toLowerCase());
+  if(hl[0]==='first name'&&hl[1]==='last name'&&hl.includes('item')&&hl.includes('notes')) return 'urable';
+  if(fn.includes('detail-bookie')||fn.includes('detail_bookie')) return 'detailbookie';
+  if(fn.includes('jobber')) return 'jobber';
+  if(fn.includes('shopmonkey')||fn.includes('customer-')) return 'shopmonkey';
+  if(fn.includes('fieldd')) return 'fieldd';
+  if(fn.includes('square')) return 'square';
+  if(fn.includes('cust_list')||fn.includes('ebms')) return 'ebms';
+  if(fn.includes('export_contacts')) return 'ghl';
+  if(fn.includes('wiz_contacts')) return 'tintwiz';
+  let h=headers.map(x=>cl(x).toLowerCase()).join('|');
+  if(h.includes('j-id')&&h.includes('display name')) return 'jobber';
+  if(h.includes('square customer id')||h.includes('creation source')) return 'square';
+  if(h.includes('total billed')&&h.includes('added on')) return 'fieldd';
+  if(h.includes('contact 1')&&h.includes('contact 2')&&h.includes('contact 5')) return 'ebms';
+  if(h.includes('contact id')&&h.includes('last activity')&&h.includes('tags')) return 'ghl';
+  if(h.includes('vehicle_year')&&h.includes('vehicle_make')&&h.includes('code')) return 'tintwiz';
+  if(h.includes('mobile_phone')&&h.includes('ts_created')&&h.includes('completed_jobs')) return 'detailbookie';
+  if(fn.includes('hubspot')||( h.includes('record id')&&h.includes('lead status'))) return 'hubspot';
+  if(h.includes('total spend')&&h.includes('payment count')) return 'stripe';
+  if(h.includes('instant profile')) return 'squarealt';
+  if(h.includes('customer name')&&h.includes('job #')&&h.includes('payment status')) return 'jobsexport';
+  if(h.includes('address1')&&h.includes('shippingaddress1')) return 'billship';
+  if(rawRows&&rawRows[2]){
+    let r2=rawRows[2].map(x=>cl(x));
+    if(r2.some(x=>x==='Company Name*')) return 'smfleet';
+    if(r2.some(x=>x==='First Name*'||x==='Shopmonkey Customer ID (optional)')) return 'shopmonkey';
+  }
+  return null;
+}
+
+function detectProductPlatform(filename, headers){
+  let fn=filename.toLowerCase();
+  let h=headers.map(x=>cl(x).toLowerCase()).join('|');
+  if(h.includes('virtual shop')) return 'urableprod';
+  // Urable import template + older single-price variants → normalize/pass through
+  if(h.startsWith('type|category|name|description')&&(h.includes('|prices')||h.includes('|price'))) return 'urabletemplate';
+  if(fn.includes('pricebook')||h.includes('industry_uuid')) return 'hcp';
+  if(h.includes('variation name')&&h.includes('item type')) return 'squarecat';
+  if(h.includes('unit price')&&h.includes('bookable')) return 'jobberprod';
+  // Two-dimension variant sheets: name + explanation/variant tier + price
+  if(h.includes('explanation')&&h.includes('price')) return 'namevariant';
+  // Generic services sheet: a name-ish + price-ish column pair
+  const hs=headers.map(x=>cl(x).toLowerCase());
+  const nameCol=hs.find(x=>x==='service name'||x==='service'||x==='item name'||x==='name');
+  const priceCol=hs.find(x=>x==='pricing'||x==='price'||x==='rate'||x==='cost'||x==='unit price');
+  if(nameCol&&priceCol) return 'genericprod';
+  return null;
+}
+
+// ─── File handling ──────────────────────────────────────────────────────────
+let convertedRows=[], currentFilename='', sourcePlatformName='previous system';
+let rawObjRows=[], rawHeaders=[];   // kept for the manual mapper
+let expectedKind='customers';       // which drop zone the file came from
+
+function handleFile(file, kind){
+  if(!file) return;
+  expectedKind=kind||'customers';
+  currentFilename=file.name;
+  let ext=file.name.split('.').pop().toLowerCase();
+  if(ext==='xlsx'||ext==='xls'){
+    let reader=new FileReader();
+    reader.onload=e=>{
+      try{
+        let wb=XLSX.read(e.target.result,{type:'array'});
+        let ws=wb.Sheets[wb.SheetNames[0]];
+        // Some exports declare a bogus single-cell dimension (!ref="A1")
+        // which hides every row — recompute the true range from actual cells.
+        (function fixRange(){
+          const cells=Object.keys(ws).filter(k=>/^[A-Z]+\d+$/.test(k));
+          if(!cells.length) return;
+          let maxR=0,maxC=0;
+          for(const a of cells){const d=XLSX.utils.decode_cell(a);if(d.r>maxR)maxR=d.r;if(d.c>maxC)maxC=d.c;}
+          ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:maxR,c:maxC}});
+        })();
+        let raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+        processRaw(raw, file.name);
+      }catch(err){ showError('Could not read XLSX file: '+err.message); }
+    };
+    reader.readAsArrayBuffer(file);
+  } else {
+    let lname=file.name.toLowerCase();
+    let useLatin=lname.includes('cust_list')||lname.includes('ebms');
+    if(useLatin){
+      let r2=new FileReader();
+      r2.onload=e2=>{
+        let dec=new TextDecoder('windows-1252');
+        let text=dec.decode(e2.target.result);
+        let result=Papa.parse(text,{header:false,skipEmptyLines:false});
+        processRaw(result.data,file.name);
+      };
+      r2.readAsArrayBuffer(file);
+    } else {
+      // Read as bytes and pick the encoding: UTF-8 first, but if the decode
+      // produced replacement chars (�), the file is likely windows-1252
+      let reader=new FileReader();
+      reader.onload=e=>{
+        let text=new TextDecoder('utf-8').decode(e.target.result);
+        if(text.includes('�')){
+          text=new TextDecoder('windows-1252').decode(e.target.result);
+        }
+        let result=Papa.parse(text,{header:false,skipEmptyLines:false});
+        processRaw(result.data,file.name);
+      };
+      reader.readAsArrayBuffer(file);
+    }
+  }
+}
+
+function processRaw(raw, filename){
+  hideError();
+  document.getElementById('mapperCard').style.display='none';
+  // Jobber-style exports put a title row above the headers — skip it
+  if(raw[0]&&raw[0].filter(c=>cl(c)).length===1&&/export/i.test(cl(raw[0][0]))&&raw[1]&&raw[1].filter(c=>cl(c)).length>3){
+    raw=raw.slice(1);
+  }
+  let headerRow=raw[0]||[];
+  // Jobs drop zone: needs a full jobs export (with line items/packages + amounts)
+  if(expectedKind==='jobs'){
+    const hl=headerRow.map(x=>cl(x).toLowerCase());
+    const isUrable=hl.includes('job #')&&hl.includes('customer name');
+    const isDB=hl.includes('job_status')&&hl.includes('pay_status')&&hl.includes('charged');
+    if(!isUrable&&!isDB){
+      showError('This does not look like a supported jobs export. Supported: Urable jobs export, Detail Bookie all-jobs export. Send the file to Josh to get the format added.');
+      return;
+    }
+    rawObjRows=raw.slice(1).map(r=>{let o={};headerRow.forEach((h,i)=>{o[cl(h)]=r[i]||'';});return o;})
+      .filter(o=>Object.values(o).some(v=>cl(v)));
+    if(isUrable&&!headerRow.map(cl).includes('Line Items')){
+      showError('This jobs export has no Line Items / amount columns, so jobs can\'t be recreated from it. You can still drop it in the customers box to extract the customer list.');
+      return;
+    }
+    jobsData=isDB?convertDetailBookieJobs(rawObjRows):parseJobsExport(rawObjRows);
+    if(!jobsData.length){ showError('No jobs found in this file.'); return; }
+    currentKind='jobs';
+    convertedRows=jobsPreviewRows(jobsData);
+    sourcePlatformName=isDB?'Detail Bookie jobs':'Jobs export';
+    document.getElementById('originName').textContent=sourcePlatformName;
+    const paidCents=jobsData.reduce((s,j)=>s+j.paid,0);
+    showDetected(sourcePlatformName, jobsData.length, 0);
+    document.getElementById('detStats').textContent=jobsData.length.toLocaleString()+' jobs · $'+(paidCents/100).toLocaleString(undefined,{maximumFractionDigits:0})+' historical payments';
+    showPreview(convertedRows);
+    setImportModeUI();
+    setMode('api'); // jobs only make sense via API import
+    return;
+  }
+  // Files from the products drop zone check product formats first
+  let platform=null;
+  if(expectedKind==='products'){
+    platform=detectProductPlatform(filename, headerRow)?null:detectPlatform(filename, headerRow, raw);
+  } else {
+    platform=detectPlatform(filename, headerRow, raw);
+  }
+
+  // Keep header-keyed rows around for the mapper fallback
+  rawHeaders=headerRow.map(cl).filter(h=>h);
+  rawObjRows=raw.slice(1).map(r=>{
+    let o={};
+    headerRow.forEach((h,i)=>{ o[cl(h)]=r[i]||''; });
+    return o;
+  }).filter(o=>Object.values(o).some(v=>cl(v)));
+
+  if(!platform){
+    // Not a known customer format — is it a products/services file?
+    let prodPlatform=detectProductPlatform(filename, headerRow);
+    if(prodPlatform){
+      let rows=[];
+      try{
+        if(prodPlatform==='hcp') rows=convertHCPPricebook(rawObjRows);
+        else if(prodPlatform==='urableprod') rows=convertUrableProductsExport(rawObjRows);
+        else if(prodPlatform==='urabletemplate') rows=convertUrableTemplateFlex(rawObjRows);
+        else if(prodPlatform==='squarecat') rows=convertSquareCatalog(rawObjRows);
+        else if(prodPlatform==='jobberprod') rows=convertJobberProducts(rawObjRows);
+        else if(prodPlatform==='namevariant') rows=convertNameVariantPrice(rawObjRows);
+        else {
+          const hs=headerRow.map(x=>cl(x));
+          const findCol=cands=>hs.find(x=>cands.includes(x.toLowerCase()))||'';
+          rows=convertGenericProductsSheet(rawObjRows,{
+            name:findCol(['service name','service','item name','name']),
+            category:findCol(['category']),
+            price:findCol(['pricing','price','rate']),
+            description:findCol(['description','discription','details']),
+            duration:findCol(['duration','minutes'])
+          });
+        }
+      }catch(err){ showError('Conversion error: '+err.message); return; }
+      if(!rows.length){ showError('No products/services found in this file.'); return; }
+      currentKind='products';
+      convertedRows=rows;
+      const pn={'hcp':'Housecall Pro pricebook','genericprod':'Services list','urableprod':'Urable products export','urabletemplate':'Urable products template','squarecat':'Square catalog','jobberprod':'Jobber products','namevariant':'Services list (tiered)'};
+      sourcePlatformName=pn[prodPlatform];
+      document.getElementById('originName').textContent=sourcePlatformName;
+      showDetected(pn[prodPlatform], rows.length, 0);
+      showPreview(rows);
+      setImportModeUI();
+      return;
+    }
+    // Unknown format → manual mapper (Claude auto-map hook lives here too)
+    openMapper();
+    return;
+  }
+
+  let rows=[], dupesBefore=0;
+  try{
+    if(platform==='shopmonkey'){
+      rows=convertShopmonkey(raw);
+    } else if(platform==='smfleet'){
+      rows=convertShopmonkeyFleet(raw);
+    } else if(platform==='billship'){
+      rows=convertBillShipExport(raw);
+    } else {
+      dupesBefore=rawObjRows.length;
+      if(platform==='jobber') rows=convertJobber(rawObjRows);
+      else if(platform==='fieldd') rows=convertFieldd(rawObjRows);
+      else if(platform==='square') rows=convertSquare(rawObjRows);
+      else if(platform==='ebms') rows=convertEBMS(rawObjRows);
+      else if(platform==='ghl') rows=convertGHL(rawObjRows);
+      else if(platform==='tintwiz') rows=convertTintWiz(rawObjRows);
+      else if(platform==='detailbookie') rows=convertDetailBookie(rawObjRows);
+      else if(platform==='hubspot') rows=convertHubSpot(rawObjRows);
+      else if(platform==='stripe') rows=convertStripe(rawObjRows);
+      else if(platform==='squarealt') rows=convertSquareAlt(rawObjRows);
+      else if(platform==='jobsexport') rows=convertJobsExport(rawObjRows);
+      else if(platform==='urable') rows=dedup(rawObjRows.map(r=>HEADERS.map(h=>cl(r[h]))).filter(r=>r.some(v=>v)));
+    }
+  }catch(err){
+    showError('Conversion error: '+err.message);
+    return;
+  }
+
+  if(!rows.length){ showError('No records found in this file.'); return; }
+
+  currentKind='customers';
+  convertedRows=rows;
+  let dupes=dupesBefore>0?Math.max(0,dupesBefore-rows.length):0;
+  let names={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template'};
+  sourcePlatformName=names[platform];
+  document.getElementById('originName').textContent=sourcePlatformName;
+  showDetected(names[platform], rows.length, dupes);
+  showPreview(rows);
+  setImportModeUI();
+}
+
+function setImportModeUI(){
+  // Vehicle/origin options only make sense for customer imports
+  const isCust=currentKind==='customers';
+  document.getElementById('createVehicles').parentElement.style.display=isCust?'flex':'none';
+  document.getElementById('tagOrigin').parentElement.style.display=isCust?'flex':'none';
+  // Jobs can't go through the CSV path — hide that tab; show catalog choice
+  document.getElementById('tabCsv').style.display=currentKind==='jobs'?'none':'';
+  document.getElementById('catalogRow').style.display=currentKind==='jobs'?'flex':'none';
+}
+
+// ─── Manual column mapper (fallback for any system) ─────────────────────────
+const MAP_GUESSES={
+  'First Name':['first name','firstname','first','given name','fname'],
+  'Last Name':['last name','lastname','last','surname','family name','lname'],
+  'Type':['type','customer type','category'],
+  'Address Line 1':['address line 1','address 1','address1','street','street address','address','addr1','street address 1'],
+  'Address Line 2':['address line 2','address 2','address2','apt','suite','unit','street address 2'],
+  'City':['city','town','suburb'],
+  'State':['state','province','region'],
+  'Postal Code':['postal code','zip','zip code','zipcode','postcode'],
+  'Country':['country'],
+  'Phone Number':['phone number','phone','mobile','cell','telephone','main phone'],
+  'Email':['email','e-mail','email address'],
+  'Notes':['notes','note','comments','description'],
+  'Item':['vehicle','item','vehicles','car','vehicle info','make model']
+};
+const FULLNAME_OPT='__fullname__';
+
+function openMapper(){
+  const tb=document.getElementById('mapRows');
+  tb.innerHTML='';
+  const lower=rawHeaders.map(h=>h.toLowerCase());
+  function guess(field){
+    for(const g of MAP_GUESSES[field]||[]){
+      const i=lower.indexOf(g);
+      if(i>=0) return rawHeaders[i];
+    }
+    for(const g of MAP_GUESSES[field]||[]){
+      const i=lower.findIndex(h=>h.includes(g));
+      if(i>=0) return rawHeaders[i];
+    }
+    return '';
+  }
+  // If no first/last but a single "name"-ish column exists, suggest split
+  const nameCol=rawHeaders[lower.findIndex(h=>h==='name'||h==='full name'||h==='customer name'||h==='display name')]||'';
+  for(const field of HEADERS){
+    let g=guess(field);
+    if(field==='First Name'&&!g&&nameCol) g=FULLNAME_OPT;
+    let opts='<option value="">— skip —</option>';
+    if(field==='First Name'&&nameCol)
+      opts+='<option value="'+FULLNAME_OPT+'"'+(g===FULLNAME_OPT?' selected':'')+'>'+escHtml(nameCol)+' (split full name)</option>';
+    for(const h of rawHeaders)
+      opts+='<option value="'+escHtml(h)+'"'+(g===h?' selected':'')+'>'+escHtml(h)+'</option>';
+    tb.innerHTML+='<tr><td class="map-field">'+field+'</td><td><select data-field="'+field+'"'+(g?' class="guessed"':'')+'>'+opts+'</select></td></tr>';
+  }
+  document.getElementById('mapperCard').style.display='block';
+  document.getElementById('results').style.display='none';
+  document.getElementById('detected').classList.remove('show');
+}
+
+function applyMapping(){
+  const sel={};
+  document.querySelectorAll('#mapRows select').forEach(s=>{ sel[s.dataset.field]=s.value; });
+  const mappedCols=new Set(Object.values(sel).filter(v=>v&&v!==FULLNAME_OPT));
+  const addUnmapped=document.getElementById('unmappedToNotes').checked;
+  const nameColLower=['name','full name','customer name','display name'];
+  const nameCol=rawHeaders.find(h=>nameColLower.includes(h.toLowerCase()))||'';
+  if(sel['First Name']===FULLNAME_OPT&&nameCol) mappedCols.add(nameCol);
+
+  let out=[];
+  for(const r of rawObjRows){
+    let row=HEADERS.map(f=>{
+      const src=sel[f];
+      if(!src) return '';
+      if(f==='First Name'&&src===FULLNAME_OPT){
+        return cl(r[nameCol]).split(' ')[0]||'';
+      }
+      return cl(r[src]);
+    });
+    if(sel['First Name']===FULLNAME_OPT&&!sel['Last Name']){
+      row[1]=cl(r[nameCol]).split(' ').slice(1).join(' ');
+    }
+    // normalize type
+    const t=row[2].toLowerCase();
+    row[2]=(t.includes('business')||t.includes('commercial')||t.includes('company'))?'Business':'Person';
+    // phone/email cleanup
+    row[9]=cleanPhone(row[9],false);
+    row[10]=cleanEmail(row[10]);
+    // unmapped → notes
+    if(addUnmapped){
+      const extra=[];
+      for(const h of rawHeaders){
+        if(!mappedCols.has(h)&&cl(r[h])) extra.push(h+': '+cl(r[h]));
+      }
+      if(extra.length) row[11]=[row[11],extra.join(' | ')].filter(Boolean).join(' | ');
+    }
+    if(row.some(v=>v)) out.push(row);
+  }
+  const before=out.length;
+  out=dedup(out);
+  if(!out.length){ showError('No records produced — check your column mapping.'); return; }
+  currentKind='customers';
+  convertedRows=out;
+  sourcePlatformName='previous system';
+  document.getElementById('originName').textContent=sourcePlatformName;
+  document.getElementById('mapperCard').style.display='none';
+  showDetected('Custom mapping', out.length, Math.max(0,before-out.length));
+  showPreview(out);
+}
+
+// ─── Claude auto-mapping hook (Phase 2) ─────────────────────────────────────
+// When the hosted backend exists, wire this to a server endpoint that calls
+// the Anthropic API (the key must NEVER live in this client-side file):
+//
+//   POST /api/suggest-mapping
+//   body: { headers: [...], sampleRows: [ {..}, {..}, {..} ] }
+//   returns: { mapping: { "First Name": "fname", ... }, confidence: {...} }
+//
+// The server prompt: given these column headers and 3 sample rows from a
+// customer export, map them to the Urable fields (HEADERS list). Return JSON.
+// Then pre-select the <select>s in openMapper() from the response instead of
+// keyword guessing, and let the user confirm.
+async function claudeSuggestMapping(headers, sampleRows){
+  throw new Error('Backend not deployed yet — see comment above.');
+}
+
+// ─── UI helpers ─────────────────────────────────────────────────────────────
+function showDetected(platform, count, dupes){
+  document.getElementById('statusCard').style.display='block';
+  let d=document.getElementById('detected');
+  document.getElementById('detBadge').textContent=platform;
+  document.getElementById('detText').textContent='Mapped to the Urable template';
+  document.getElementById('detStats').textContent=
+    count.toLocaleString()+(currentKind==='products'?' services':' customers')+(dupes>0?' · '+dupes+' duplicates removed':'');
+  d.classList.add('show');
+}
+
+function showPreview(rows){
+  const HH=activeHeaders();
+  let preview=rows.slice(0,5);
+  let more=rows.length-5;
+  let html='<table><thead><tr>';
+  HH.forEach(h=>{ html+='<th>'+h+'</th>'; });
+  html+='</tr></thead><tbody>';
+  preview.forEach(r=>{
+    html+='<tr>';
+    r.forEach((cell,i)=>{
+      if(currentKind==='customers'&&i===2){
+        html+='<td><span class="type-'+(cell==='Business'?'business':'person')+'">'+cell+'</span></td>';
+      } else {
+        html+='<td title="'+escHtml(cell)+'">'+escHtml(cell)+'</td>';
+      }
+    });
+    html+='</tr>';
+  });
+  if(more>0) html+='<tr class="more-row"><td colspan="'+HH.length+'">+ '+more.toLocaleString()+' more '+(currentKind==='products'?'services':'customers')+'...</td></tr>';
+  html+='</tbody></table>';
+  document.getElementById('tableWrap').innerHTML=html;
+  document.getElementById('previewNote').textContent='(first 5 of '+rows.length.toLocaleString()+')';
+  document.getElementById('results').style.display='block';
+}
+
+function showError(msg){
+  document.getElementById('statusCard').style.display='block';
+  document.getElementById('detected').classList.remove('show');
+  let b=document.getElementById('errorBox');
+  b.textContent='⚠ '+msg;
+  b.classList.add('show');
+  document.getElementById('results').style.display='none';
+}
+function hideError(){ document.getElementById('errorBox').classList.remove('show'); }
+function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function setMode(m){
+  document.getElementById('tabCsv').classList.toggle('active',m==='csv');
+  document.getElementById('tabApi').classList.toggle('active',m==='api');
+  document.getElementById('panelCsv').classList.toggle('active',m==='csv');
+  document.getElementById('panelApi').classList.toggle('active',m==='api');
+}
+
+function downloadCSV(){
+  let csvRows=[activeHeaders()].concat(convertedRows);
+  let csv=csvRows.map(r=>r.map(cell=>{
+    let s=String(cell);
+    if(s.includes(',')||s.includes('"')||s.includes('\n')) s='"'+s.replace(/"/g,'""')+'"';
+    return s;
+  }).join(',')).join('\r\n');
+  let blob=new Blob([csv],{type:'text/csv'});
+  let url=URL.createObjectURL(blob);
+  let a=document.createElement('a');
+  a.href=url;
+  let base=currentFilename.replace(/\.[^.]+$/,'');
+  a.download='urable_import_'+base+'.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ─── Direct API import ──────────────────────────────────────────────────────
+// Row → CustomerInput (see https://app.urable.com/docs — components/schemas)
+const US_STATES=new Set(['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC',
+'ALABAMA','ALASKA','ARIZONA','ARKANSAS','CALIFORNIA','COLORADO','CONNECTICUT','DELAWARE','FLORIDA','GEORGIA','HAWAII','IDAHO','ILLINOIS','INDIANA','IOWA','KANSAS','KENTUCKY','LOUISIANA','MAINE','MARYLAND','MASSACHUSETTS','MICHIGAN','MINNESOTA','MISSISSIPPI','MISSOURI','MONTANA','NEBRASKA','NEVADA','NEW HAMPSHIRE','NEW JERSEY','NEW MEXICO','NEW YORK','NORTH CAROLINA','NORTH DAKOTA','OHIO','OKLAHOMA','OREGON','PENNSYLVANIA','RHODE ISLAND','SOUTH CAROLINA','SOUTH DAKOTA','TENNESSEE','TEXAS','UTAH','VERMONT','VIRGINIA','WASHINGTON','WEST VIRGINIA','WISCONSIN','WYOMING']);
+const AU_STATES=new Set(['QLD','NSW','VIC','WA','SA','TAS','NT','ACT']);
+
+// The API requires a valid country on every location — infer when missing
+function inferISO(state,zip,phone){
+  const st=cl(state).toUpperCase();
+  if(US_STATES.has(st)&&st!=='WA'&&st!=='SA'&&st!=='NT') return 'US'; // WA/SA/NT ambiguous with AU
+  if(/^\d{5}(-\d{4})?$/.test(cl(zip))) return 'US';
+  const d=cl(phone).replace(/\D/g,'');
+  if(AU_STATES.has(st)&&/^\d{4}$/.test(cl(zip))) return 'AU';
+  if(d.length===10||(d.length===11&&d[0]==='1')) return 'US';
+  return '';
+}
+
+function rowToCustomerPayload(row, origin){
+  const [first,last,type,a1,a2,city,state,zip,country,phone,email,notes]=row;
+  const p={ firstName: first||last||'Customer',
+            type: type==='Business'?'business':'person',
+            status:'existing' };
+  if(first&&last) p.lastName=last;
+  if(email) p.emails=[{label:'Main', value:email}];
+  if(phone){
+    // Match the app's E.164 convention: 10-digit US numbers get +1
+    const digits=String(phone).replace(/\D/g,'');
+    const e164=digits.length===10?('+1'+digits):(String(phone).startsWith('+')?phone:digits);
+    p.phoneNumbers=[{label:'Mobile', value:e164}];
+  }
+  let extraNotes='';
+  if(a1||city||state||zip){
+    let iso=isoCountry(country)||inferISO(state,zip,phone);
+    if(iso){
+      const addr={country:iso};
+      if(a1) addr.line1=a1;
+      if(a2) addr.line2=a2;
+      if(city) addr.city=city;
+      if(state) addr.state=state;
+      if(zip) addr.postalCode=zip;
+      p.locations=[{label:'Main', value:{address:addr}}];
+    } else {
+      // Country unknowable — keep the customer, preserve the address in notes
+      extraNotes='Address: '+[a1,a2,city,state,zip,country].filter(Boolean).join(', ');
+    }
+  }
+  const allNotes=[notes,extraNotes].filter(Boolean).join(' | ');
+  if(allNotes) p.notes=allNotes;
+  if(origin) p.origin=origin;
+  return p;
+}
+
+// Row → ProductInput. Money is in CENTS per the API spec.
+function rowToProductPayload(row){
+  const [type,category,name,description,labels,prices,costs,taxable]=row;
+  const p={ type:(type||'service').toLowerCase()==='product'?'product':'service', name:name };
+  p.industry=selectedIndustry(); // required by the API
+  if(description) p.description=description;
+  // The API requires a category on every product (undocumented) — fall back
+  p.categoryName=category||'Imported';
+  p.taxable=String(taxable).toLowerCase()==='true';
+  const labelArr=cl(labels)?labels.split(';').map(s=>s.trim()):[];
+  const priceArr=cl(prices)?prices.split(';').map(s=>s.trim()):[];
+  const costArr=cl(costs)?costs.split(';').map(s=>s.trim()):[];
+  p.prices=priceArr.map((v,i)=>{
+    const val=cleanPrice(v); // handles "$1,234.00" and "1234.00"
+    const pr={ value: val===null?NaN:Math.round(val*100) }; // dollars → cents
+    if(labelArr[i]) pr.label=labelArr[i];
+    const c=cleanPrice(costArr[i]||'');
+    if(c!==null) pr.cost=Math.round(c*100);
+    return pr;
+  }).filter(pr=>!isNaN(pr.value));
+  return p;
+}
+
+async function apiFetch(path, opts, key){
+  const res=await fetch(apiBase()+path,{
+    ...opts,
+    headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+key, ...(opts.headers||{}) }
+  });
+  if(res.status===429){
+    // Rate limited — wait for the window to reset, then retry once
+    await new Promise(r=>setTimeout(r,20000));
+    return apiFetch(path,opts,key);
+  }
+  let body=null;
+  try{ body=await res.json(); }catch(e){}
+  return { ok:res.ok, status:res.status, body };
+}
+
+async function testConnection(){
+  const key=document.getElementById('apiKey').value.trim();
+  if(!key){ alert('Paste your API key first.'); return; }
+  const btn=document.getElementById('testBtn');
+  btn.disabled=true; btn.textContent='Testing…';
+  try{
+    const r=await apiFetch('/v1/customers?limit=1',{method:'GET'},key);
+    if(r.ok) btn.textContent='✓ Connected';
+    else if(r.status===401) btn.textContent='✗ Invalid key';
+    else if(r.status===403) btn.textContent='✗ Key missing customers scope';
+    else btn.textContent='✗ Error '+r.status;
+  }catch(e){
+    btn.textContent='✗ Network error';
+    logLine('Network error — if this happens instantly, the API may not allow browser requests (CORS). Flag for the dev team; the CSV download mode still works.', true);
+    document.getElementById('importLog').style.display='block';
+  }
+  btn.disabled=false;
+  setTimeout(()=>{btn.textContent='Test connection';},4000);
+}
+
+function logLine(msg,isErr){
+  const log=document.getElementById('importLog');
+  log.style.display='block';
+  log.innerHTML+='<div class="'+(isErr?'log-err':'log-ok')+'">'+escHtml(msg)+'</div>';
+  log.scrollTop=log.scrollHeight;
+}
+
+// ─── Jobs import pipeline ───────────────────────────────────────────────────
+// Four phases so nothing races: customers → products (with price variants
+// selectable by SKU) → vehicles → jobs. Historical paid/tip/tax amounts are
+// preserved in job notes until the API grows write paths for them.
+async function importJobsRun(key){
+  const btn=document.getElementById('importBtn');
+  btn.disabled=true; btn.textContent='Importing…';
+  document.getElementById('progressWrap').style.display='block';
+  document.getElementById('importLog').innerHTML='';
+  document.getElementById('summaryBox').style.display='none';
+  const errors=[];
+  function err(label,msg){ errors.push(label+': '+msg); if(errors.length<=40) logLine(label+': '+msg,true); }
+  const fill=document.getElementById('progressFill'), ptext=document.getElementById('progressText');
+
+  // Phase plan — identifier + name so shared household phones don't merge people
+  const custKey=c=>(c.phone||c.email.toLowerCase()||'')+'|'+c.name.toLowerCase().replace(/\s+/g,' ');
+  const custMap={}, prodMap={}, itemMap={};
+  const uniqueCust={}, prodVariants={}, uniqueVeh={};
+  // Catalog mode: named services per source system, or one generic entry so an
+  // existing Products & Services list stays clean (names preserved in notes)
+  const catalogEl=document.getElementById('createCatalog');
+  const useCatalog=catalogEl?!!catalogEl.checked:true;
+  const GENERIC='Imported historical service';
+  const VARIANTS_PER_PRODUCT=100; // stay well under any per-product limits
+  const centsProdName={}; // cents -> generic product name (chunked)
+  for(const j of jobsData){
+    const ck=custKey(j.customer);
+    if(!uniqueCust[ck]) uniqueCust[ck]=j.customer;
+    j.lineItems.forEach((li,idx)=>{
+      const pname=useCatalog?li:GENERIC;
+      const cents=idx===0?(j.firstLineCents??j.perLineCents):j.perLineCents;
+      (prodVariants[pname]=prodVariants[pname]||new Set()).add(cents);
+    });
+    j.vehicles.forEach((v,i)=>{
+      const vk=ck+'|'+normVeh(v);
+      if(!uniqueVeh[vk]) uniqueVeh[vk]={ck,name:v,vin:j.vins[i]||'',plate:j.plates[i]||'',itype:j.itemType||'automotive'};
+    });
+  }
+  if(!useCatalog){
+    // chunk the generic entry's variants into multiple products if needed
+    const all=[...(prodVariants[GENERIC]||new Set())].sort((a,b)=>a-b);
+    delete prodVariants[GENERIC];
+    for(let i=0;i<all.length;i+=VARIANTS_PER_PRODUCT){
+      const name=i===0?GENERIC:(GENERIC+' ('+(Math.floor(i/VARIANTS_PER_PRODUCT)+1)+')');
+      prodVariants[name]=new Set(all.slice(i,i+VARIANTS_PER_PRODUCT));
+      for(const c of all.slice(i,i+VARIANTS_PER_PRODUCT)) centsProdName[c]=name;
+    }
+  }
+  const custList=Object.entries(uniqueCust), prodList=Object.entries(prodVariants), vehList=Object.entries(uniqueVeh);
+  const payPlanned=jobsData.filter(j=>j.paid>0).length;
+  const totalOps=custList.length+prodList.length+vehList.length+jobsData.length+payPlanned;
+  let done=0, createdCust=0, createdProd=0, createdVeh=0, createdJobs=0, failedJobs=0;
+  let reusedCust=0, reusedVeh=0, reusedProd=0, createdPayments=0;
+  const madeJobs=[]; // jobs created this run, for the payments phase
+  let paymentsBlocked=false;
+
+  // ── Phase 0: scan the account and MATCH existing records instead of
+  // duplicating them. Critical when a customer list was imported first, or on
+  // re-runs. Matching uses the same rule as dedupe: identifier + same name.
+  document.getElementById('progressText').textContent='Scanning existing account data…';
+  async function pageAll(path){
+    let out=[],startAfter='';
+    for(let guard=0;guard<300;guard++){
+      const r=await apiFetch('/v1/'+path+'?limit=100'+(startAfter?'&startAfter='+encodeURIComponent(startAfter):''),{method:'GET'},key);
+      const data=r.ok&&r.body&&r.body.data;
+      if(!data||!data.length) break;
+      out=out.concat(data);
+      if(data.length<100) break;
+      startAfter=data[data.length-1].id;
+    }
+    return out;
+  }
+  const normPhone=v=>{let d=String(v||'').replace(/\D/g,'');return d.length===11&&d[0]==='1'?d.slice(1):d;};
+  const normNm=s=>String(s||'').trim().toLowerCase().replace(/\s+/g,' ');
+  const exCust=await pageAll('customers');
+  const exItems=await pageAll('items');
+  const exProds=await pageAll('products');
+  const exIndex={};
+  for(const c of exCust){
+    const nm=normNm((c.firstName||'')+' '+(c.lastName||''));
+    const phones=(c.phoneNumbers||[]).map(p=>normPhone(p.value)).filter(Boolean);
+    const emails=(c.emails||[]).map(e=>String(e.value||'').toLowerCase()).filter(Boolean);
+    for(const p of phones) if(!exIndex[p+'|'+nm]) exIndex[p+'|'+nm]=c.id;
+    for(const e of emails) if(!exIndex[e+'|'+nm]) exIndex[e+'|'+nm]=c.id;
+    // name-only fallback: lets job rows with no phone/email find their customer
+    if(nm&&!exIndex['|'+nm]) exIndex['|'+nm]=c.id;
+  }
+  for(const ck of Object.keys(uniqueCust)){
+    if(exIndex[ck]){ custMap[ck]=exIndex[ck]; reusedCust++; }
+  }
+  // existing vehicles of matched customers → reuse
+  const idToCks={};
+  for(const [ck,id] of Object.entries(custMap)){ (idToCks[id]=idToCks[id]||[]).push(ck); }
+  const ckItems={}; // ck -> [{norm,id}] for containment fallback
+  for(const it of exItems){
+    const cid=String(it.customerRef||'').split('/').pop();
+    for(const ck of (idToCks[cid]||[])){
+      const nv=normVeh(it.name);
+      const vk=ck+'|'+nv;
+      if(!itemMap[vk]) itemMap[vk]=it.id;
+      (ckItems[ck]=ckItems[ck]||[]).push({norm:nv,id:it.id});
+    }
+  }
+  // exact-normalized miss → space-insensitive containment within the customer
+  function findVehicle(ck,name){
+    const nv=normVeh(name);
+    if(itemMap[ck+'|'+nv]) return itemMap[ck+'|'+nv];
+    const cnv=nv.replace(/ /g,'');
+    if(cnv.length>=4){
+      for(const e of (ckItems[ck]||[])){
+        const ce=e.norm.replace(/ /g,'');
+        if(ce.length>=4&&(ce===cnv||ce.includes(cnv)||cnv.includes(ce))) return e.id;
+      }
+    }
+    return null;
+  }
+  // existing products by exact name → reuse, and note which price SKUs exist
+  const exProdSkus={}, exProdPrices={};
+  for(const p of exProds){
+    const nm=String(p.name||'');
+    if(!prodMap[nm]) prodMap[nm]=p.id;
+    if(!exProdSkus[nm]){
+      exProdSkus[nm]=new Set((p.prices||[]).map(x=>x.sku).filter(Boolean));
+      exProdPrices[nm]=p.prices||[];
+    }
+  }
+  function tick(phase){ done++; fill.style.width=Math.round(done/totalOps*100)+'%';
+    ptext.textContent=phase+' · '+done.toLocaleString()+' / '+totalOps.toLocaleString()+' operations'; }
+
+  async function pool(list, n, fn){
+    let i=0;
+    async function w(){ while(i<list.length){ const x=list[i++]; await fn(x); } }
+    await Promise.all(Array.from({length:Math.min(n,list.length)},w));
+  }
+
+  // 1) customers (skip the ones matched in the scan)
+  await pool(custList, 4, async ([ck,c])=>{
+    if(custMap[ck]){ tick('Matching customers'); return; }
+    const parts=c.name.split(/\s+/);
+    const payload={firstName:(parts[0]||'Customer').replace(/^\w/,x=>x.toUpperCase()),type:'person',status:'existing',origin:'Imported — jobs history'};
+    const last=parts.slice(1).join(' ');
+    if(last) payload.lastName=last.replace(/^\w/,x=>x.toUpperCase());
+    if(c.email) payload.emails=[{label:'Main',value:c.email}];
+    if(c.phone) payload.phoneNumbers=[{label:'Mobile',value:c.phone.length===10?'+1'+c.phone:c.phone}];
+    if(c.a1||c.city){
+      const iso=isoCountry(c.country)||inferISO(c.state,c.zip,c.phone);
+      if(iso){
+        const addr={country:iso};
+        if(c.a1)addr.line1=c.a1; if(c.a2)addr.line2=c.a2; if(c.city)addr.city=c.city;
+        if(c.state)addr.state=c.state; if(c.zip)addr.postalCode=c.zip;
+        payload.locations=[{label:'Main',value:{address:addr}}];
+      }
+    }
+    const r=await apiFetch('/v1/customers',{method:'POST',body:JSON.stringify(payload)},key);
+    if(r.ok&&r.body&&r.body.success){ custMap[ck]=r.body.data.id; createdCust++; }
+    else err('customer '+c.name,(r.body&&r.body.error)||('HTTP '+r.status));
+    tick('Creating customers');
+  });
+
+  // 2) products — reuse existing (append missing price variants), create the rest
+  await pool(prodList, 4, async ([name,centsSet])=>{
+    const wanted=[...centsSet].sort((a,b)=>a-b).map(c=>({sku:'imp'+c,label:'Imported $'+(c/100).toFixed(2),value:c}));
+    if(prodMap[name]&&exProdSkus[name]){
+      const missing=wanted.filter(w=>!exProdSkus[name].has(w.sku));
+      if(!missing.length){ reusedProd++; tick('Matching services'); return; }
+      const r=await apiFetch('/v1/products/'+prodMap[name],{method:'PATCH',
+        body:JSON.stringify({prices:(exProdPrices[name]||[]).concat(missing)})},key);
+      if(r.ok&&r.body&&r.body.success){ reusedProd++; }
+      else err('product '+name,(r.body&&r.body.error)||('HTTP '+r.status));
+      tick('Updating services'); return;
+    }
+    const r=await apiFetch('/v1/products',{method:'POST',body:JSON.stringify({type:'service',name:name,industry:selectedIndustry(),categoryName:'Imported',taxable:false,prices:wanted})},key);
+    if(r.ok&&r.body&&r.body.success){ prodMap[name]=r.body.data.id; createdProd++; }
+    else err('product '+name,(r.body&&r.body.error)||('HTTP '+r.status));
+    tick('Creating services');
+  });
+
+  // 3) vehicles (skip ones already on the matched customer, incl. fuzzy match)
+  await pool(vehList, 4, async ([vk,v])=>{
+    const existing=findVehicle(v.ck,v.name);
+    if(existing){ itemMap[vk]=existing; reusedVeh++; tick('Matching vehicles'); return; }
+    const custId=custMap[v.ck];
+    if(!custId){ tick('Creating vehicles'); return; }
+    const payload={customerId:custId,name:v.name,type:v.itype||'automotive',industry:selectedIndustry()};
+    if(v.vin) payload.vins=[v.vin];
+    if(v.plate) payload.licensePlates=[v.plate];
+    const r=await apiFetch('/v1/items',{method:'POST',body:JSON.stringify(payload)},key);
+    if(r.ok&&r.body&&r.body.success){ itemMap[vk]=r.body.data.id; createdVeh++; }
+    else err('vehicle '+v.name,(r.body&&r.body.error)||('HTTP '+r.status));
+    tick('Creating vehicles');
+  });
+
+  // 4) jobs
+  await pool(jobsData, 4, async (j)=>{
+    const ck=custKey(j.customer);
+    const custId=custMap[ck];
+    if(!custId){ failedJobs++; err('job #'+j.num,'customer was not created'); tick('Creating jobs'); return; }
+    let itemIds=j.vehicles.map(v=>itemMap[ck+'|'+normVeh(v)]||findVehicle(ck,v)).filter(Boolean);
+    if(!itemIds.length){
+      // Jobs require at least one item — create a placeholder vehicle once per customer
+      const pk=ck+'|__placeholder__';
+      if(!itemMap[pk]){
+        const r=await apiFetch('/v1/items',{method:'POST',body:JSON.stringify({customerId:custId,name:'Vehicle (imported)',type:'automotive',industry:selectedIndustry()})},key);
+        if(r.ok&&r.body&&r.body.success) itemMap[pk]=r.body.data.id;
+      }
+      if(itemMap[pk]) itemIds=[itemMap[pk]];
+    }
+    if(!itemIds.length){ failedJobs++; err('job #'+j.num,'no vehicle/item available'); tick('Creating jobs'); return; }
+    const lineItems=j.lineItems.map((li,i)=>{
+      const cents=i===0?(j.firstLineCents??j.perLineCents):j.perLineCents;
+      const pname=useCatalog?li:centsProdName[cents];
+      const e={productServiceId:prodMap[pname],priceSku:'imp'+cents};
+      e.itemId=itemIds[j.lineItems.length===itemIds.length?i:0]||itemIds[0];
+      return e;
+    }).filter(e=>e.productServiceId);
+    if(!lineItems.length){ failedJobs++; err('job #'+j.num,'no line items/services available'); tick('Creating jobs'); return; }
+    // Generic mode: keep the real service names on the job record
+    let jobNotes=j.notes;
+    if(!useCatalog&&j.lineItems.length){
+      jobNotes=['Services: '+j.lineItems.join(', '),j.notes].filter(Boolean).join(' | ');
+    }
+    const payload={customerId:custId,itemIds:itemIds,type:j.type,status:j.status,
+      industry:j.industry||selectedIndustry(),
+      lineItems:lineItems,autoTax:false};
+    if(j.title) payload.name=j.title;
+    if(j.start) payload.start=j.start;
+    if(j.end) payload.end=j.end;
+    if(j.dropOff) payload.dropOff=j.dropOff;
+    if(j.allDay) payload.allDay=true;
+    // completedAt (undocumented but accepted) drives the app's Completed tab.
+    // Fallback chain: real completion timestamp → end → start
+    if(j.status==='completed'){
+      const ca=j.completedAt||j.end||j.start;
+      if(ca) payload.completedAt=ca;
+    }
+    // canceledAt: pre-wired for the API addition (harmlessly ignored until
+    // it ships). Fallback: last-updated → end → start
+    if(j.status==='canceled'){
+      const xa=j.updatedAt||j.end||j.start;
+      if(xa) payload.canceledAt=xa;
+    }
+    if(j.adjustments.length) payload.adjustments=j.adjustments.map(a=>({type:'discount',name:a.name,value:a.cents}));
+    if(jobNotes) payload.notes=jobNotes;
+    const r=await apiFetch('/v1/jobs',{method:'POST',body:JSON.stringify(payload)},key);
+    if(r.ok&&r.body&&r.body.success){
+      createdJobs++;
+      if(j.paid>0) madeJobs.push({jid:r.body.data.id,custId:custId,j:j});
+    }
+    else { failedJobs++; err('job #'+j.num,(r.body&&r.body.error)||('HTTP '+r.status)); }
+    tick('Creating jobs');
+  });
+
+  // 5) historical payments — POST /v1/payments with imported:true so the
+  // invoices show as paid and revenue reports bucket in the original period
+  await pool(madeJobs, 4, async ({jid,custId,j})=>{
+    if(paymentsBlocked){ tick('Recording payments'); return; }
+    const r=await apiFetch('/v1/payments',{method:'POST',body:JSON.stringify({
+      customerId:custId, jobIds:[jid], total:j.paid,
+      paymentMethod:'other', status:'paid',
+      paidAt:j.completedAt||j.end||j.start||Date.now(),
+      name:'Imported payment', imported:true})},key);
+    if(r.ok&&r.body&&r.body.success) createdPayments++;
+    else{
+      const msg=(r.body&&r.body.error)||('HTTP '+r.status);
+      if(r.status===403&&/scope/i.test(msg)){
+        paymentsBlocked=true;
+        err('payments','API key is missing the payments:write scope — create a new key including it, then re-run the jobs import (existing records will be matched, only payments will be added)');
+      } else err('payment for job #'+j.num,msg);
+    }
+    tick('Recording payments');
+  });
+
+  const grouped={};
+  for(const e of errors){ const m=e.split(': ').slice(1).join(': '); grouped[m]=(grouped[m]||0)+1; }
+  const gs=Object.entries(grouped).sort((a,b)=>b[1]-a[1]).map(([m,c])=>'&ldquo;'+escHtml(m)+'&rdquo; &times;'+c).join('<br>');
+  const sb=document.getElementById('summaryBox');
+  sb.style.display='block';
+  sb.innerHTML='<strong>Jobs import complete.</strong> '+createdJobs.toLocaleString()+' jobs created · '+
+    createdCust.toLocaleString()+' customers created, '+reusedCust.toLocaleString()+' matched to existing · '+
+    createdVeh.toLocaleString()+' vehicles created, '+reusedVeh.toLocaleString()+' matched · '+
+    createdProd.toLocaleString()+' services created, '+reusedProd.toLocaleString()+' reused · '+
+    createdPayments.toLocaleString()+' historical payments recorded'+
+    (failedJobs?', <span style="color:#dc2626">'+failedJobs+' jobs failed</span>.':'.')+
+    ' Historical payments, tips, and tax are preserved in each job\'s notes.'+
+    (gs?'<div style="margin-top:8px;font-size:12.5px"><strong>Failure breakdown:</strong><br>'+gs+'</div>':'');
+  btn.disabled=false; btn.textContent='Start import';
+  importing=false;
+}
+
+let importing=false;
+async function startImport(){
+  if(importing) return;
+  const key=document.getElementById('apiKey').value.trim();
+  if(!key){ alert('Paste your API key first.'); return; }
+  if(currentKind==='jobs'){
+    if(!jobsData.length){ alert('No jobs to import.'); return; }
+    if(!confirm('Import '+jobsData.length.toLocaleString()+' jobs (plus their customers, vehicles, and services) into your Urable account?')) return;
+    importing=true;
+    return importJobsRun(key);
+  }
+  if(!convertedRows.length){ alert('No converted records to import.'); return; }
+  const noun=currentKind==='products'?'services':'customers';
+  if(!confirm('Import '+convertedRows.length.toLocaleString()+' '+noun+' into your Urable account?')) return;
+
+  importing=true;
+  const isProd=currentKind==='products';
+  const doVehicles=!isProd&&document.getElementById('createVehicles').checked;
+  const doOrigin=!isProd&&document.getElementById('tagOrigin').checked;
+  const origin=doOrigin?('Imported from '+sourcePlatformName):'';
+  const btn=document.getElementById('importBtn');
+  btn.disabled=true; btn.textContent='Importing…';
+  document.getElementById('progressWrap').style.display='block';
+  document.getElementById('importLog').innerHTML='';
+  document.getElementById('summaryBox').style.display='none';
+
+  let created=0, vehiclesCreated=0, failed=0;
+  const errors=[];
+  function addError(label,msg){
+    errors.push({label,msg});
+    if(errors.length<=40) logLine(label+': '+msg,true); // stream live
+    else if(errors.length===41) logLine('…further errors will be summarized at the end',true);
+  }
+  const total=convertedRows.length;
+
+  // Modest concurrency: 4 at a time keeps us far under the 2,500/min limit
+  const CONCURRENCY=4;
+  let idx=0;
+
+  async function worker(){
+    while(idx<total){
+      const i=idx++;
+      const row=convertedRows[i];
+      const label=isProd?(row[2]||'(unnamed service)'):(((row[0]||'')+' '+(row[1]||'')).trim()||'(no name)');
+      try{
+        const payload=isProd?rowToProductPayload(row):rowToCustomerPayload(row, origin);
+        const r=await apiFetch(isProd?'/v1/products':'/v1/customers',{method:'POST',body:JSON.stringify(payload)},key);
+        if(r.ok&&r.body&&r.body.success){
+          created++;
+          const custId=r.body.data&&(r.body.data.id||r.body.data);
+          // Vehicles → Items
+          if(doVehicles&&custId&&cl(row[12])){
+            for(const v of row[12].split(' | ')){
+              const name=cl(v);
+              if(!name) continue;
+              const ir=await apiFetch('/v1/items',{method:'POST',
+                body:JSON.stringify({customerId:custId, name:name, type:'automotive', industry:selectedIndustry()})},key);
+              if(ir.ok) vehiclesCreated++;
+              else addError(label+' — vehicle "'+name+'"', (ir.body&&ir.body.error)||('HTTP '+ir.status));
+            }
+          }
+        } else {
+          failed++;
+          addError(label, (r.body&&r.body.error)||('HTTP '+r.status));
+        }
+      }catch(e){
+        failed++;
+        addError(label, e.message);
+        if(failed===1&&created===0){
+          logLine('Network error — the API may not allow browser requests (CORS). Stopping. Use CSV download mode instead and flag CORS for the dev team.',true);
+          idx=total; // stop all workers
+        }
+      }
+      const done=created+failed;
+      document.getElementById('progressFill').style.width=Math.round(done/total*100)+'%';
+      document.getElementById('progressText').textContent=
+        done.toLocaleString()+' / '+total.toLocaleString()+' processed · '+
+        created.toLocaleString()+' created'+(vehiclesCreated?' · '+vehiclesCreated+' vehicles':'')+
+        (failed?' · '+failed+' failed':'');
+    }
+  }
+  await Promise.all(Array.from({length:CONCURRENCY},worker));
+
+  // Group errors by cause so patterns jump out
+  const grouped={};
+  for(const e of errors) grouped[e.msg]=(grouped[e.msg]||0)+1;
+  const groupSummary=Object.entries(grouped).sort((a,b)=>b[1]-a[1])
+    .map(([m,c])=>'&ldquo;'+escHtml(m)+'&rdquo; &times;'+c).join('<br>');
+
+  const sb=document.getElementById('summaryBox');
+  sb.style.display='block';
+  sb.innerHTML='<strong>Import complete.</strong> '+created.toLocaleString()+' '+noun+' created'+
+    (vehiclesCreated?', '+vehiclesCreated.toLocaleString()+' vehicles added':'')+
+    (failed?', <span style="color:#dc2626">'+failed+' failed</span>.':'.')+
+    ' Open your Urable account to verify.'+
+    (failed?'<div style="margin-top:8px;font-size:12.5px"><strong>Failure breakdown:</strong><br>'+groupSummary+'</div>':'');
+  btn.disabled=false; btn.textContent='Start import';
+  importing=false;
+}
+
+function reset(){
+  convertedRows=[]; rawObjRows=[]; rawHeaders=[]; jobsData=[];
+  currentKind='customers';
+  currentFilename=''; sourcePlatformName='previous system';
+  document.getElementById('fileInputJ').value='';
+  document.getElementById('tabCsv').style.display='';
+  document.getElementById('detected').classList.remove('show');
+  hideError();
+  document.getElementById('statusCard').style.display='none';
+  document.getElementById('results').style.display='none';
+  document.getElementById('mapperCard').style.display='none';
+  document.getElementById('fileInput').value='';
+  document.getElementById('fileInputP').value='';
+  document.getElementById('progressWrap').style.display='none';
+  document.getElementById('importLog').style.display='none';
+  document.getElementById('importLog').innerHTML='';
+  document.getElementById('summaryBox').style.display='none';
+}
+
+// ─── Drag and drop ──────────────────────────────────────────────────────────
+for(const [id,kind] of [['dropZone','customers'],['dropZoneP','products'],['dropZoneJ','jobs']]){
+  const dz=document.getElementById(id);
+  dz.addEventListener('dragover',e=>{ e.preventDefault(); dz.classList.add('drag-over'); });
+  dz.addEventListener('dragleave',()=>dz.classList.remove('drag-over'));
+  dz.addEventListener('drop',e=>{
+    e.preventDefault();
+    dz.classList.remove('drag-over');
+    if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0],kind);
+  });
+}
+</script>
+</body>
+</html>
