@@ -1,4 +1,4 @@
-# Urable Data Import Tool
+# Urable Data Import Tool 
 
 Browser-based import tool for moving a shop's existing customer, catalog, and job
 history data into Urable. Single self-contained `index.html` — no backend, no
