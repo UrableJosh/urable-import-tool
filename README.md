@@ -15,9 +15,19 @@ account's own API key, entered at runtime and never stored.
 Replace `index.html` on the `main` branch and Vercel redeploys automatically
 (~20 seconds). Users just refresh — no version to distribute.
 
-To replace it: **Add file ▾ → Upload files** on this repo, drag the new
-`index.html` in, and commit. A file dropped with an existing name overwrites it in
-that commit. Don't paste into the web editor — the file is ~110KB.
+Two ways to push a change:
+
+- **From a Claude session:** `T=<github_pat> node ../push.mjs "message"`, run from
+  the repo root. Uses the GitHub Git Data API (`git push` is blocked in that
+  sandbox). Guards refuse the push if `index.html` or `README.md` is missing, or
+  if `index.html` is under 90KB — the tree is built without a `base_tree`, so it
+  replaces the branch wholesale.
+- **By hand:** **Add file ▾ → Upload files**, drag the new `index.html` in, and
+  commit. A file dropped with an existing name overwrites it in that commit.
+  Don't paste into the web editor — the file is ~110KB.
+
+After either, wait 60–90s, then verify with a cache-busted URL
+(`...vercel.app/?v=<sha>`).
 
 ## Supported formats
 - **Customers:** Jobber, Shopmonkey (incl. Fleet), Fieldd, Square, EBMS,
