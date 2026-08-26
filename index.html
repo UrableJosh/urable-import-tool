@@ -198,7 +198,6 @@ tbody tr:last-child td{border-bottom:none}
         <button class="btn" onclick="downloadCSV()">&#8681; Download Urable-ready CSV</button>
         <button class="btn secondary" onclick="reset()" style="margin-left:10px">Start over</button>
       </div>
-      <p class="sub" id="pruneNote" style="margin-top:12px;display:none"></p>
     </div>
 
     <!-- API mode -->
@@ -1679,39 +1678,37 @@ function setMode(m){
   document.getElementById('panelApi').classList.toggle('active',m==='api');
 }
 
-// Strip dead weight from the export: rows where every cell is blank, and
-// columns no row actually populated. A shop that never recorded addresses
-// shouldn't get eight empty address columns in their import file.
-// `pin` columns always survive — they're the ones Urable needs to identify
-// a record, so dropping them would break the import on a sparse file.
-const PIN_COLS={ customers:['First Name'], products:['Name'] };
-function pruneEmpty(headers, rows, kind){
-  const pin=PIN_COLS[kind]||[];
+// Keep the sheet's used range exactly A1:<last Urable column><last data row>.
+// Excel/Sheets treat any cell that has ever held a value as "used", so a stray
+// wide row or a trailing empty row makes the file scroll out to AA/AB/AC or
+// hundreds of rows past the data — which the Urable importer chokes on.
+// Every Urable template column is kept whether or not it's populated; only
+// cells BEYOND the template, and rows with nothing in them, are removed.
+function fitToTemplate(headers, rows){
+  const w=headers.length;
   const filled=v=>String(v===undefined||v===null?'':v).trim()!=='';
-  const liveRows=rows.filter(r=>r.some(filled));
-  const keep=headers.map((h,i)=>pin.includes(h)||liveRows.some(r=>filled(r[i])));
-  return {
-    headers: headers.filter((_,i)=>keep[i]),
-    rows: liveRows.map(r=>r.filter((_,i)=>keep[i])),
-    droppedRows: rows.length-liveRows.length,
-    droppedCols: headers.filter((_,i)=>!keep[i]),
-  };
+  const out=[];
+  let trimmedWide=0;
+  for(const r of rows){
+    if(!r.some(filled)) continue;              // drop all-blank rows
+    if(r.length>w) trimmedWide++;
+    const fixed=[];
+    for(let i=0;i<w;i++){                       // pad short, truncate wide
+      const v=r[i];
+      fixed.push(v===undefined||v===null?'':String(v).trim());
+    }
+    out.push(fixed);
+  }
+  return {rows:out, droppedRows:rows.length-out.length, trimmedWide};
 }
 
 function downloadCSV(){
-  let headers=activeHeaders(), rows=convertedRows, note='';
-  // Jobs is a reporting-shaped export with fixed columns — leave it alone.
-  if(currentKind==='customers'||currentKind==='products'){
-    const p=pruneEmpty(headers, rows, currentKind);
-    headers=p.headers; rows=p.rows;
-    const bits=[];
-    if(p.droppedRows) bits.push(p.droppedRows.toLocaleString()+' empty row'+(p.droppedRows===1?'':'s'));
-    if(p.droppedCols.length) bits.push(p.droppedCols.length+' empty column'+(p.droppedCols.length===1?'':'s')+' ('+p.droppedCols.join(', ')+')');
-    if(bits.length) note='Removed '+bits.join(' and ')+' from the download \u2014 only columns with real data are included.';
+  const headers=activeHeaders();
+  const fit=fitToTemplate(headers, convertedRows);
+  if(fit.droppedRows||fit.trimmedWide){
+    console.log('[export] dropped '+fit.droppedRows+' blank row(s), trimmed '+fit.trimmedWide+' over-wide row(s)');
   }
-  const el=document.getElementById('pruneNote');
-  if(el){ el.textContent=note; el.style.display=note?'block':'none'; }
-  let csvRows=[headers].concat(rows);
+  let csvRows=[headers].concat(fit.rows);
   let csv=csvRows.map(r=>r.map(cell=>{
     let s=String(cell);
     if(s.includes(',')||s.includes('"')||s.includes('\n')) s='"'+s.replace(/"/g,'""')+'"';
