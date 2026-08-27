@@ -1195,6 +1195,15 @@ function convertGenericProductsSheet(data, cols){
 }
 
 // ─── Jobs import (Urable jobs export format) ────────────────────────────────
+// Detail Bookie shops price by vehicle size. Condense their long type names
+// into the short labels Urable expects on multi-price services.
+const SIZE_LABEL={'coupe 2 door':'Coupe','sedan 4 door':'Sedan','sedan 2 door':'Coupe',
+  'small suv':'Small SUV','large suv':'Large SUV','mini van':'Van','passenger van':'Van',
+  'cargo van':'Van','small pickup truck 2 door':'Small Truck','small pickup truck 4 door':'Small Truck',
+  'full sized pickup truck 2 door':'Full Size Truck','full sized pick up truck 4 door':'Full Size Truck',
+  'full sized pickup truck 4 door':'Full Size Truck','motorcycle':'Motorcycle','box truck':'Box Truck'};
+function sizeLabel(v){ const k=cl(v).toLowerCase(); return SIZE_LABEL[k]||cl(v); }
+
 function moneyCents(v){
   const n=cleanPrice(v);
   return n===null?0:Math.round(n*100);
@@ -1323,9 +1332,90 @@ function convertDetailBookieJobs(data){
   return jobs;
 }
 
+function convertDBTickets(data){
+  // Detail Bookie BackOffice ticket scrape → one row per invoice line item.
+  // Unlike the all-jobs CSV export, this carries every line item WITH its own
+  // price, so nothing has to be split across lines by guesswork.
+  const STATUS={'ESTIMATE':'quote','BOOKING':'quote','UNCONFIRMED':'quote',
+    'SCHEDULED':'scheduled','CHECKEDIN':'in progress','INPROGRESS':'in progress',
+    'PICKUP':'in progress','COMPLETE':'completed','CANCELLED':'canceled','NOSHOW':'canceled'};
+  const byJob=new Map();
+  for(const r of data){
+    const id=cl(r['job_id']); if(!id) continue;
+    if(!byJob.has(id)) byJob.set(id,[]);
+    byJob.get(id).push(r);
+  }
+  const jobs=[]; let skippedAnon=0;
+  for(const [id,rows] of byJob){
+    const h=rows[0];
+    const first=cl(h['first_name']),last=cl(h['last_name']);
+    if(!first&&!last) continue;
+    if(first==='Anonymous'&&/noreply@/i.test(cl(h['email']))){ skippedAnon++; continue; }
+    const names=[],cents=[],cats=[],sizes=[];
+    for(const r of rows){
+      const nm=cl(r['service_name']); if(!nm) continue;
+      const c=moneyCents(r['price']);
+      names.push(nm); cents.push(c); cats.push(cl(r['service_category'])||'Imported');
+      sizes.push(sizeLabel(r['vehicle_type']));
+    }
+    const subtotal=moneyCents(h['job_subtotal']);
+    const fee=moneyCents(h['convenience_fee']);
+    // The card convenience fee is a real charge on the invoice — carry it as its
+    // own line so the job total reconciles to what the customer actually paid.
+    if(fee>0){ names.push('Convenience Fee'); cents.push(fee); cats.push('Fees'); sizes.push(''); }
+    const disc=Math.abs(moneyCents(h['discount']));
+    const tip=moneyCents(h['tip']), dep=Math.abs(moneyCents(h['deposit']));
+    const adjustments=[];
+    if(disc>0) adjustments.push({name:'Imported discount',cents:disc});
+    const paid=moneyCents(h['total_paid']);
+    const phone=['phone_mobile','phone_work','phone_home'].map(k=>usPhone(h[k])).find(p=>p)||'';
+    const noteBits=[];
+    const pay=cl(h['pay_status']);
+    if(pay) noteBits.push('Historical payment status: '+pay+(paid?' ($'+(paid/100).toFixed(2)+' paid)':''));
+    if(cl(h['payment_methods'])) noteBits.push('Payments: '+cl(h['payment_methods']));
+    if(tip>0) noteBits.push('Tip: $'+(tip/100).toFixed(2));
+    if(dep>0) noteBits.push('Deposit: $'+(dep/100).toFixed(2));
+    const vtype=cl(h['vehicle_type']); if(vtype) noteBits.push('Vehicle type: '+vtype);
+    const company=cl(h['company_name']); if(company) noteBits.push('Company: '+company);
+    const start=parseJobDate(cl(h['dropoff']).replace(/(\.\d+)?([+-]\d{2})$/,''));
+    let end=parseJobDate(cl(h['pickup']).replace(/(\.\d+)?([+-]\d{2})$/,''));
+    const mins=parseInt(cl(h['minutes_needed'])||'0',10);
+    if(!end&&start&&mins>0) end=start+mins*60000;
+    const compTs=end||parseJobDate(cl(h['updated_at']).split('.')[0]);
+    const marine=/marine|boat/i.test(cl(h['category']));
+    const veh=cl(h['vehicle'])||[cl(h['vehicle_year']),cl(h['vehicle_make']),cl(h['vehicle_model'])].filter(Boolean).join(' ');
+    jobs.push({
+      num:id,
+      status:STATUS[cl(h['job_status'])]||'completed',
+      type:'shop', title:'',
+      customer:{ name:(first+' '+last).trim(), email:cleanEmail(h['email']), phone:phone,
+        a1:cl(h['address1']),a2:cl(h['address2']),city:cl(h['city']),
+        state:cl(h['state_code']),zip:cl(h['zip_code']),country:cl(h['country_code']) },
+      vehicles:veh?[veh]:[], vins:[], plates:[],
+      itemType:marine?'marine':'automotive',
+      completedAt:compTs,
+      updatedAt:parseJobDate(cl(h['updated_at']).split('.')[0]),
+      lineItems:names.length?names:['Imported service'],
+      lineCents:names.length?cents:[subtotal],
+      lineCats:names.length?cats:['Imported'],
+      lineSizes:names.length?sizes:[''],
+      subtotal:subtotal,
+      perLineCents:names.length?Math.floor(subtotal/names.length):subtotal,
+      firstLineCents:names.length?subtotal-Math.floor(subtotal/names.length)*(names.length-1):subtotal,
+      adjustments:adjustments,
+      start:start,end:end,dropOff:start,allDay:false,
+      taxed:false,
+      notes:noteBits.join(' | '),
+      total:subtotal,paid:paid
+    });
+  }
+  jobs._skippedAnon=skippedAnon;
+  return jobs;
+}
+
 function jobsPreviewRows(jobs){
   return jobs.map(j=>[j.num,j.status,j.customer.name,j.vehicles.join(' | '),
-    j.lineItems.join(' | '),'$'+(j.subtotal/100).toFixed(2),'$'+(j.total/100).toFixed(2),
+    j.lineItems.map((li,i)=>j.lineCents?li+' @ $'+((j.lineCents[i]||0)/100).toFixed(2):li).join(' | '),'$'+(j.subtotal/100).toFixed(2),'$'+(j.total/100).toFixed(2),
     '$'+(j.paid/100).toFixed(2),j.start?new Date(j.start).toLocaleDateString():'',j.notes]);
 }
 
@@ -1458,8 +1548,10 @@ function processRaw(raw, filename){
     const hl=headerRow.map(x=>cl(x).toLowerCase());
     const isUrable=hl.includes('job #')&&hl.includes('customer name');
     const isDB=hl.includes('job_status')&&hl.includes('pay_status')&&hl.includes('charged');
-    if(!isUrable&&!isDB){
-      showError('This does not look like a supported jobs export. Supported: Urable jobs export, Detail Bookie all-jobs export. Send the file to Josh to get the format added.');
+    // Detail Bookie BackOffice ticket scrape: one row per invoice line item
+    const isTicket=hl.includes('job_id')&&hl.includes('line_no')&&hl.includes('service_name')&&hl.includes('price');
+    if(!isUrable&&!isDB&&!isTicket){
+      showError('This does not look like a supported jobs export. Supported: Urable jobs export, Detail Bookie all-jobs export, Detail Bookie ticket scrape. Send the file to Josh to get the format added.');
       return;
     }
     rawObjRows=raw.slice(1).map(r=>{let o={};headerRow.forEach((h,i)=>{o[cl(h)]=r[i]||'';});return o;})
@@ -1468,11 +1560,11 @@ function processRaw(raw, filename){
       showError('This jobs export has no Line Items / amount columns, so jobs can\'t be recreated from it. You can still drop it in the customers box to extract the customer list.');
       return;
     }
-    jobsData=isDB?convertDetailBookieJobs(rawObjRows):parseJobsExport(rawObjRows);
+    jobsData=isTicket?convertDBTickets(rawObjRows):(isDB?convertDetailBookieJobs(rawObjRows):parseJobsExport(rawObjRows));
     if(!jobsData.length){ showError('No jobs found in this file.'); return; }
     currentKind='jobs';
     convertedRows=jobsPreviewRows(jobsData);
-    sourcePlatformName=isDB?'Detail Bookie jobs':'Jobs export';
+    sourcePlatformName=isTicket?'Detail Bookie ticket scrape':(isDB?'Detail Bookie jobs':'Jobs export');
     document.getElementById('originName').textContent=sourcePlatformName;
     const paidCents=jobsData.reduce((s,j)=>s+j.paid,0);
     showDetected(sourcePlatformName, jobsData.length, 0);
@@ -1882,15 +1974,34 @@ function rowToProductPayload(row){
   return p;
 }
 
-async function apiFetch(path, opts, key){
-  const res=await fetch(apiBase()+path,{
-    ...opts,
-    headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+key, ...(opts.headers||{}) }
-  });
+// A fetch with no timeout can hang forever: one dead socket parks a worker and
+// the whole import stalls a few operations from the end. 60s ceiling, and a
+// timed-out write is NOT retried — the server may have applied it, and a
+// duplicate job is worse than a reported failure. Re-running the file heals it.
+const API_TIMEOUT_MS=60000;
+async function apiFetch(path, opts, key, _attempt){
+  const isRead=!opts.method||String(opts.method).toUpperCase()==='GET';
+  const ac=new AbortController();
+  const timer=setTimeout(()=>ac.abort(),API_TIMEOUT_MS);
+  let res;
+  try{
+    res=await fetch(apiBase()+path,{
+      ...opts, signal:ac.signal,
+      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+key, ...(opts.headers||{}) }
+    });
+  }catch(e){
+    clearTimeout(timer);
+    const timedOut=e&&e.name==='AbortError';
+    // reads are safe to retry; writes are not
+    if(isRead&&(_attempt||0)<2){ await new Promise(r=>setTimeout(r,2000)); return apiFetch(path,opts,key,(_attempt||0)+1); }
+    return { ok:false, status:0, body:{ error: timedOut?('timed out after '+(API_TIMEOUT_MS/1000)+'s — re-run the file to finish this record'):('network error: '+((e&&e.message)||'unknown')) } };
+  }
+  clearTimeout(timer);
   if(res.status===429){
     // Rate limited — wait for the window to reset, then retry once
     await new Promise(r=>setTimeout(r,20000));
-    return apiFetch(path,opts,key);
+    if((_attempt||0)<3) return apiFetch(path,opts,key,(_attempt||0)+1);
+    return { ok:false, status:429, body:{ error:'rate limited after 3 waits — re-run the file to finish' } };
   }
   let body=null;
   try{ body=await res.json(); }catch(e){}
@@ -1949,13 +2060,55 @@ async function importJobsRun(key){
   const GENERIC='Imported historical service';
   const VARIANTS_PER_PRODUCT=100; // stay well under any per-product limits
   const centsProdName={}; // cents -> generic product name (chunked)
+  const prodCategory={};  // product name -> source category
+  const skuFor={};        // product name -> Map(cents -> priceSku actually in use)
+  const prodPriceSizes={}; // product name -> Map(cents -> Map(size -> count))
+
+  // Turn observed (price, vehicle size) usage into Urable-style price labels.
+  // A size is "owned" by the price it was charged most often; a price owned by
+  // every size becomes "All vehicles"; a price no size owns keeps its amount.
+  function priceLabelsFor(name, centsList){
+    const usage=prodPriceSizes[name];
+    if(!usage||!usage.size) return null;
+    const bySize=new Map();
+    for(const [c,m] of usage) for(const [sz,n] of m){
+      if(!bySize.has(sz)) bySize.set(sz,new Map());
+      bySize.get(sz).set(c,(bySize.get(sz).get(c)||0)+n);
+    }
+    if(!bySize.size) return null;
+    const owner=new Map();
+    for(const [sz,m] of bySize){ let best=null,bn=-1;
+      for(const [c,n] of m) if(n>bn||(n===bn&&c<best)){bn=n;best=c;}
+      owner.set(sz,best); }
+    const out=new Map(), used=new Set();
+    for(const c of centsList){
+      const owned=[...owner].filter(([,cc])=>cc===c).map(([sz])=>sz).sort();
+      let lab;
+      if(!owned.length) lab='$'+(c/100).toFixed(2);
+      else if(owned.length===bySize.size&&bySize.size>1) lab='All vehicles';
+      else if(owned.length<=3) lab=owned.join(' / ');
+      else lab=owned.slice(0,2).join(' / ')+' +'+(owned.length-2)+' more';
+      if(used.has(lab)) lab=lab+' ($'+(c/100).toFixed(2)+')';
+      used.add(lab); out.set(c,lab);
+    }
+    return out;
+  }
   for(const j of jobsData){
     const ck=custKey(j.customer);
     if(!uniqueCust[ck]) uniqueCust[ck]=j.customer;
     j.lineItems.forEach((li,idx)=>{
       const pname=useCatalog?li:GENERIC;
-      const cents=idx===0?(j.firstLineCents??j.perLineCents):j.perLineCents;
+      // lineCents: true per-line price from the source. Falls back to the even
+      // split only for sources that carry no per-line amounts.
+      const cents=j.lineCents?j.lineCents[idx]:(idx===0?(j.firstLineCents??j.perLineCents):j.perLineCents);
       (prodVariants[pname]=prodVariants[pname]||new Set()).add(cents);
+      if(useCatalog&&j.lineCats&&j.lineCats[idx]&&!prodCategory[pname]) prodCategory[pname]=j.lineCats[idx];
+      // remember which vehicle sizes were charged this amount, so the price
+      // variant can be labelled "Full Size Truck" instead of "Imported $495.00"
+      const sz=j.lineSizes&&j.lineSizes[idx];
+      if(sz){ const m=(prodPriceSizes[pname]=prodPriceSizes[pname]||new Map());
+        if(!m.has(cents)) m.set(cents,new Map());
+        m.get(cents).set(sz,(m.get(cents).get(sz)||0)+1); }
     });
     j.vehicles.forEach((v,i)=>{
       const vk=ck+'|'+normVeh(v);
@@ -1971,6 +2124,26 @@ async function importJobsRun(key){
       prodVariants[name]=new Set(all.slice(i,i+VARIANTS_PER_PRODUCT));
       for(const c of all.slice(i,i+VARIANTS_PER_PRODUCT)) centsProdName[c]=name;
     }
+  }
+  // Any single product carrying more than VARIANTS_PER_PRODUCT price points gets
+  // chunked. Rite-Way's card convenience fee alone has 340 distinct amounts —
+  // one product with 340 prices is unusable in the UI and risks a server limit.
+  const chunkOf={}; // base name -> Map(cents -> the product name actually used)
+  for(const pname of Object.keys(prodVariants)){
+    const set=prodVariants[pname];
+    if(set.size<=VARIANTS_PER_PRODUCT) continue;
+    const all=[...set].sort((a,b)=>a-b);
+    delete prodVariants[pname];
+    const m=new Map();
+    for(let i=0;i<all.length;i+=VARIANTS_PER_PRODUCT){
+      const part=all.slice(i,i+VARIANTS_PER_PRODUCT);
+      const nm=i===0?pname:(pname+' ('+(Math.floor(i/VARIANTS_PER_PRODUCT)+1)+')');
+      prodVariants[nm]=new Set(part);
+      if(prodCategory[pname]) prodCategory[nm]=prodCategory[pname];
+      if(prodPriceSizes[pname]) prodPriceSizes[nm]=prodPriceSizes[pname];
+      for(const c of part) m.set(c,nm);
+    }
+    chunkOf[pname]=m;
   }
   const custList=Object.entries(uniqueCust), prodList=Object.entries(prodVariants), vehList=Object.entries(uniqueVeh);
   const payPlanned=jobsData.filter(j=>j.paid>0).length;
@@ -2054,12 +2227,24 @@ async function importJobsRun(key){
   // existing jobs → skip ones already imported, so a re-run only fills gaps.
   // Signature: customer + start + subtotal (no job-level unique id exists).
   const exJobs=await pageAll('jobs');
-  const exJobByKey={};
+  const exJobByKey={}, exJobByNum={};
   for(const ej of exJobs){
     const cid=String(ej.customerRef||'').split('/').pop();
     const sub=(ej.invoice&&ej.invoice.subtotal)||0;
     const k=cid+'|'+(ej.start||0)+'|'+sub;
-    if(!exJobByKey[k]) exJobByKey[k]={id:ej.id,paid:(ej.invoice&&ej.invoice.amountPaid)||0};
+    const rec={id:ej.id,paid:(ej.invoice&&ej.invoice.amountPaid)||0};
+    // Every job we import is stamped "Imported job #N" in its notes. Matching
+    // on that is exact — the customer+start+subtotal signature misses any job
+    // carrying a discount, because Urable's subtotal is pre-adjustment.
+    const nt=String(ej.notes||ej.note||ej.description||'');
+    const m=nt.match(/Imported job #(\S+)/);
+    if(m){
+      // A stamped job is identified by its source number and by nothing else.
+      // Leaving it in the signature index lets a DIFFERENT source job collide
+      // with it — same customer, same amount, no appointment date — and get
+      // skipped as "already imported" when it was never imported at all.
+      if(!exJobByNum[m[1]]) exJobByNum[m[1]]=rec;
+    } else if(!exJobByKey[k]) exJobByKey[k]=rec; // pre-existing, non-imported job
   }
   function tick(phase){ done++; fill.style.width=Math.round(done/totalOps*100)+'%';
     ptext.textContent=phase+' · '+done.toLocaleString()+' / '+totalOps.toLocaleString()+' operations'; }
@@ -2100,26 +2285,47 @@ async function importJobsRun(key){
   // customer's live service rewrites their pricing (and fails outright when
   // their existing price has no label, which the API requires once there's
   // more than one). Historical data must never mutate a working catalog.
-  await pool(prodList, 4, async ([name,centsSet])=>{
-    const wanted=[...centsSet].sort((a,b)=>a-b).map(c=>({sku:'imp'+c,label:'Imported $'+(c/100).toFixed(2),value:c}));
+  // valueMap: what price SKUs an existing catalog entry already offers, keyed by
+  // amount. A service the shop already prices at $495 is reused at ITS sku —
+  // we no longer demand our own imp<cents> sku and clone the entry when it's
+  // absent, which is what produced duplicate "(imported)" companions.
+  const valueMap=nm=>{ const m=new Map(); for(const p of (exProdPrices[nm]||[])) if(p&&p.sku!=null&&p.value!=null&&!m.has(p.value)) m.set(p.value,p.sku); return m; };
+  // Urable mints a category on first use. Four concurrent POSTs naming the same
+  // new category produce duplicate categories (seen on dev: "Exterior Package"
+  // twice). Create one product per distinct category serially first, so the
+  // category exists before the parallel pass references it.
+  const seenCat=new Set(), firstOfCat=[], restProd=[];
+  for(const entry of prodList){
+    const c=prodCategory[entry[0]]||'Imported';
+    if(seenCat.has(c)) restProd.push(entry); else { seenCat.add(c); firstOfCat.push(entry); }
+  }
+  const makeProduct=async ([name,centsSet])=>{
+    const centsList=[...centsSet].sort((a,b)=>a-b);
+    const labels=priceLabelsFor(name,centsList);
+    const wanted=centsList.map(c=>({sku:'imp'+c,label:(labels&&labels.get(c))||('Imported $'+(c/100).toFixed(2)),value:c}));
+    const category=prodCategory[name]||'Imported';
     if(prodMap[name]&&exProdSkus[name]){
-      const missing=wanted.filter(w=>!exProdSkus[name].has(w.sku));
-      if(!missing.length){ reusedProd++; tick('Matching services'); return; }
+      const have=valueMap(name);
+      const missing=wanted.filter(w=>!exProdSkus[name].has(w.sku)&&!have.has(w.value));
+      if(!missing.length){ skuFor[name]=have; reusedProd++; tick('Matching services'); return; }
       const compName=name+' (imported)';
       if(prodMap[compName]&&exProdSkus[compName]){
-        const missing2=wanted.filter(w=>!exProdSkus[compName].has(w.sku));
-        if(!missing2.length){ prodMap[name]=prodMap[compName]; reusedProd++; tick('Matching services'); return; }
+        const have2=valueMap(compName);
+        const missing2=wanted.filter(w=>!exProdSkus[compName].has(w.sku)&&!have2.has(w.value));
+        if(!missing2.length){ prodMap[name]=prodMap[compName]; skuFor[name]=have2; reusedProd++; tick('Matching services'); return; }
       }
-      const cr=await apiFetch('/v1/products',{method:'POST',body:JSON.stringify({type:'service',name:compName,industry:selectedIndustry(),categoryName:'Imported',taxable:false,prices:wanted})},key);
-      if(cr.ok&&cr.body&&cr.body.success){ prodMap[name]=cr.body.data.id; createdProd++; }
+      const cr=await apiFetch('/v1/products',{method:'POST',body:JSON.stringify({type:'service',name:compName,industry:selectedIndustry(),categoryName:category,taxable:false,prices:wanted})},key);
+      if(cr.ok&&cr.body&&cr.body.success){ prodMap[name]=cr.body.data.id; skuFor[name]=new Map(wanted.map(w=>[w.value,w.sku])); createdProd++; }
       else err('product '+compName,(cr.body&&cr.body.error)||('HTTP '+cr.status));
       tick('Creating services'); return;
     }
-    const r=await apiFetch('/v1/products',{method:'POST',body:JSON.stringify({type:'service',name:name,industry:selectedIndustry(),categoryName:'Imported',taxable:false,prices:wanted})},key);
-    if(r.ok&&r.body&&r.body.success){ prodMap[name]=r.body.data.id; createdProd++; }
+    const r=await apiFetch('/v1/products',{method:'POST',body:JSON.stringify({type:'service',name:name,industry:selectedIndustry(),categoryName:category,taxable:false,prices:wanted})},key);
+    if(r.ok&&r.body&&r.body.success){ prodMap[name]=r.body.data.id; skuFor[name]=new Map(wanted.map(w=>[w.value,w.sku])); createdProd++; }
     else err('product '+name,(r.body&&r.body.error)||('HTTP '+r.status));
     tick('Creating services');
-  });
+  };
+  await pool(firstOfCat, 1, makeProduct);  // serial: one per category
+  await pool(restProd, 4, makeProduct);
 
   // 3) vehicles (skip ones already on the matched customer, incl. fuzzy match)
   await pool(vehList, 4, async ([vk,v])=>{
@@ -2143,8 +2349,10 @@ async function importJobsRun(key){
     if(!custId){ failedJobs++; err('job #'+j.num,'customer was not created'); tick('Creating jobs'); return; }
     // Already imported? Skip — this makes re-running a file safe, so a partial
     // or failed run can be finished by simply importing the same file again.
-    const sig=custId+'|'+(j.start||0)+'|'+j.subtotal;
-    const already=exJobByKey[sig];
+    // signature subtotal must be pre-adjustment to match Urable's invoice.subtotal
+    const sigSub=j.lineCents?j.lineCents.reduce((a,b)=>a+(b||0),0):j.subtotal;
+    const sig=custId+'|'+(j.start||0)+'|'+sigSub;
+    const already=(j.num&&exJobByNum[j.num])||exJobByKey[sig];
     if(already){
       skippedJobs++;
       // self-heal: the job exists but its historical payment never landed
@@ -2163,9 +2371,11 @@ async function importJobsRun(key){
     }
     if(!itemIds.length){ failedJobs++; err('job #'+j.num,'no vehicle/item available'); tick('Creating jobs'); return; }
     const lineItems=j.lineItems.map((li,i)=>{
-      const cents=i===0?(j.firstLineCents??j.perLineCents):j.perLineCents;
-      const pname=useCatalog?li:centsProdName[cents];
-      const e={productServiceId:prodMap[pname],priceSku:'imp'+cents};
+      const cents=j.lineCents?j.lineCents[i]:(i===0?(j.firstLineCents??j.perLineCents):j.perLineCents);
+      const base=useCatalog?li:centsProdName[cents];
+      const pname=(chunkOf[base]&&chunkOf[base].get(cents))||base;
+      const sku=(skuFor[pname]&&skuFor[pname].get(cents))||('imp'+cents);
+      const e={productServiceId:prodMap[pname],priceSku:sku};
       e.itemId=itemIds[j.lineItems.length===itemIds.length?i:0]||itemIds[0];
       return e;
     }).filter(e=>e.productServiceId);
@@ -2201,7 +2411,11 @@ async function importJobsRun(key){
     const r=await apiFetch('/v1/jobs',{method:'POST',body:JSON.stringify(payload)},key);
     if(r.ok&&r.body&&r.body.success){
       createdJobs++;
-      exJobByKey[sig]={id:r.body.data.id,paid:0}; // guard against in-file repeats
+      const rec={id:r.body.data.id,paid:0}; // guard against in-file repeats
+      // number when we have one, signature only as a last resort — two estimates
+      // for one customer at one price with no date share a signature but are
+      // genuinely two jobs.
+      if(j.num) exJobByNum[j.num]=rec; else exJobByKey[sig]=rec;
       if(j.paid>0) madeJobs.push({jid:r.body.data.id,custId:custId,j:j});
     }
     else { failedJobs++; err('job #'+j.num,(r.body&&r.body.error)||('HTTP '+r.status)); }
