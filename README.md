@@ -48,3 +48,8 @@ After either, wait 60–90s, then verify with a cache-busted URL
   category instead.
 - API key needs scopes: `customers:write`, `items:write`, `products:write`,
   `jobs:write`, `payments:write` (plus read scopes for matching).
+
+
+## Walkthrough
+
+A 15-step interactive CS guide lives at `/walkthrough/`, step script at `/walkthrough/script.json`.
