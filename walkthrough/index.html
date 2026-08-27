@@ -206,7 +206,8 @@
     <button class="part-tab" id="tabA" onclick="goTo(0)">Part A · Customers</button>
     <button class="part-tab" id="tabB" onclick="goTo(4)">Part B · Unknown Formats</button>
     <button class="part-tab" id="tabC" onclick="goTo(8)">Part C · Import to Urable</button>
-    <button class="part-tab" id="tabD" onclick="goTo(14)">Part D · Services & Jobs</button>
+    <button class="part-tab" id="tabD" onclick="goTo(15)">Part D · Products & Services</button>
+    <button class="part-tab" id="tabE" onclick="goTo(17)">Part E · Jobs History</button>
   </div>
 </header>
 
@@ -295,24 +296,24 @@ const steps=[
  {img:"step-12.webp",part:"D",title:"Check prices before importing",
   body:"Services vary wildly between systems, so this preview is worth more of your attention than the customer one. Check the prices and the variant labels against the shop's actual menu.",
   hs:[50,52.6]},
- {img:"step-13.webp",part:"D",title:"Jobs history",
+ {img:"step-13.webp",part:"E",title:"Jobs history",
   body:"The third box is the full migration: past jobs with dates, vehicles, services, invoice amounts and historical payments. Note the second figure \u2014 total historical payments. Jobs are <b>API import only</b>; there's no CSV path.",
   hs:[67.3,33.1]},
- {img:"step-14.webp",part:"D",title:"Review the jobs preview",
+ {img:"step-14.webp",part:"E",title:"Review the jobs preview",
   body:"Job numbers, status, customer, vehicle, line items and amounts. Job totals are exact; the split across individual line items is approximate, because most source exports don't carry per-line prices.",
   hs:[50,37.7]},
- {img:"step-15.webp",part:"D",title:"The one decision that matters",
+ {img:"step-15.webp",part:"E",title:"The one decision that matters",
   body:"<b>Add each historical service to the catalog</b> \u2014 leave this <b>unchecked</b> on an account that already has a real service menu. Historical jobs then bill against a single generic \"Imported historical service\" entry, with the real names preserved in each job's notes, so the shop's live catalog stays clean. Tick it only on a fresh account with no menu yet.",
   hs:[25.7,73.9],
   note:"Run the customers import first, confirm it looks right, then run jobs. The jobs pass matches existing customers rather than recreating them."},
- {img:"step-10.webp",part:"D",title:"Test, then start the jobs run",
+ {img:"step-10.webp",part:"E",title:"Test, then start the jobs run",
   body:"Jobs is API-only, so the same key flow applies: <b>Test connection</b> first, then <b>Start import</b>. A jobs run is much bigger than a customer one \u2014 it creates customers, services, vehicles, jobs and payments in a single pass.",
   hs:[66.3,72.6],
   note:"Leave the tab open and don't navigate away. The import runs from this page \u2014 closing it stops the run partway."},
- {img:"step-10b.webp",part:"D",title:"Watch the phases",
+ {img:"step-10b.webp",part:"E",title:"Watch the phases",
   body:"The bar runs through the phases in order: matching existing records, then customers, services, vehicles, jobs, and finally historical payments. On a real migration this takes a while \u2014 178 operations here.",
   hs:[49.6,90.5]},
- {img:"step-10c.webp",part:"D",title:"Read the jobs summary",
+ {img:"step-10c.webp",part:"E",title:"Read the jobs summary",
   body:"Counts for everything created, matched and skipped \u2014 and in red, anything that failed with the reason. This real run did <b>95 jobs created, 3 already imported (skipped), 20 customers, 35 vehicles, 9 historical payments</b> \u2014 and <b>14 jobs failed</b> because those field jobs had no customer address in the source file.",
   hs:[49.6,85.0],
   note:"Failures are safe: everything else still imported. Fix the underlying data and re-run the same file \u2014 the jobs pass skips what it already imported, so only the failures get retried.",
@@ -330,7 +331,7 @@ const shot=document.getElementById('shot'),
       nextBtn=document.getElementById('nextBtn'),
       progress=document.getElementById('progress');
 
-const PART_IDS=["A", "B", "C", "D"];
+const PART_IDS=["A","B","C","D","E"];
 const groups={};
 PART_IDS.forEach(pid=>{
   const g=document.createElement('div');g.className='group';

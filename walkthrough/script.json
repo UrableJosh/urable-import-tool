@@ -22,7 +22,11 @@
   },
   {
    "id": "D",
-   "label": "Part D · Services & Jobs"
+   "label": "Part D · Products & Services"
+  },
+  {
+   "id": "E",
+   "label": "Part E · Jobs History"
   }
  ],
  "step_count": 23,
@@ -207,7 +211,7 @@
   },
   {
    "img": "step-13.webp",
-   "part": "D",
+   "part": "E",
    "title": "Jobs history",
    "body": "The third box is the full migration: past jobs with dates, vehicles, services, invoice amounts and historical payments. Note the second figure — total historical payments. Jobs are <b>API import only</b>; there's no CSV path.",
    "hs": [
@@ -217,7 +221,7 @@
   },
   {
    "img": "step-14.webp",
-   "part": "D",
+   "part": "E",
    "title": "Review the jobs preview",
    "body": "Job numbers, status, customer, vehicle, line items and amounts. Job totals are exact; the split across individual line items is approximate, because most source exports don't carry per-line prices.",
    "hs": [
@@ -227,7 +231,7 @@
   },
   {
    "img": "step-15.webp",
-   "part": "D",
+   "part": "E",
    "title": "The one decision that matters",
    "body": "<b>Add each historical service to the catalog</b> — leave this <b>unchecked</b> on an account that already has a real service menu. Historical jobs then bill against a single generic \"Imported historical service\" entry, with the real names preserved in each job's notes, so the shop's live catalog stays clean. Tick it only on a fresh account with no menu yet.",
    "hs": [
@@ -238,7 +242,7 @@
   },
   {
    "img": "step-10.webp",
-   "part": "D",
+   "part": "E",
    "title": "Test, then start the jobs run",
    "body": "Jobs is API-only, so the same key flow applies: <b>Test connection</b> first, then <b>Start import</b>. A jobs run is much bigger than a customer one — it creates customers, services, vehicles, jobs and payments in a single pass.",
    "hs": [
@@ -249,7 +253,7 @@
   },
   {
    "img": "step-10b.webp",
-   "part": "D",
+   "part": "E",
    "title": "Watch the phases",
    "body": "The bar runs through the phases in order: matching existing records, then customers, services, vehicles, jobs, and finally historical payments. On a real migration this takes a while — 178 operations here.",
    "hs": [
@@ -259,7 +263,7 @@
   },
   {
    "img": "step-10c.webp",
-   "part": "D",
+   "part": "E",
    "title": "Read the jobs summary",
    "body": "Counts for everything created, matched and skipped — and in red, anything that failed with the reason. This real run did <b>95 jobs created, 3 already imported (skipped), 20 customers, 35 vehicles, 9 historical payments</b> — and <b>14 jobs failed</b> because those field jobs had no customer address in the source file.",
    "hs": [
