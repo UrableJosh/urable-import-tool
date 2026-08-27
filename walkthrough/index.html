@@ -221,7 +221,7 @@
   </div>
 
   <div class="caption">
-    <div class="step-no"><small>Step</small><span id="stepNum">1</span>/19</div>
+    <div class="step-no"><small>Step</small><span id="stepNum">1</span>/21</div>
     <div class="step-text">
       <h2 id="stepTitle"></h2>
       <p id="stepBody"></p>
@@ -278,14 +278,22 @@ const steps=[
   body:"The key is shown <b>once</b>. Copy it with the icon on the right and paste it straight into the import tool before you click Done. Once this dialog closes there is no way to see it again.",
   hs:[62.6,53.2],
   note:"Lost it? No problem \u2014 you can't recover a key, but you can create another one in seconds. Revoke the old one so it doesn't linger."},
- {img:"step-09.webp",part:"C",title:"Paste it into the tool",
-  body:"Back in the import tool, switch to the <b>Import directly to Urable</b> tab and paste the key. Leave the server on <b>Production</b> and set the industry to match the shop.",
+  {img:"step-09.webp",part:"C",title:"Paste it into the tool",
+  body:"Back in the import tool, switch to the <b>Import directly to Urable</b> tab and paste the key. Set the server to match the account the key came from \u2014 <b>Production</b> for a live shop. Then set the industry to match.",
   hs:[37.3,66.9],
-  note:"The key is used for that import only and is never stored. It stays in the browser tab."},
- {img:"step-10.webp",part:"C",title:"Test, then start",
-  body:"Always click <b>Test connection</b> first \u2014 it confirms the key works before anything gets written. Leave <b>Also create vehicles</b> and <b>Tag each customer's origin</b> ticked unless you have a reason not to; the origin tag is what lets the shop report on migrated vs. new customers later. Then <b>Start import</b>.",
-  hs:[70,66.9],
-  note:"There is no bulk undo. Imports are safe to re-run \u2014 the tool scans the account first and matches records that already exist \u2014 but nothing removes them once they're in."},
+  note:"The key is used for that import only and is never stored. It stays in the browser tab. The screenshots in this part were captured against a dev account, so they show Dev server."},
+  {img:"step-10.webp",part:"C",title:"Test the connection first",
+  body:"Click <b>Test connection</b> before anything else. <b>\u2713 Connected</b> means the key and the server match and the import can write. Anything else and you stop here \u2014 a bad key wastes a long run.",
+  hs:[66.3,72.6],
+  note:"The result only shows on the button for a few seconds. If you miss it, just click again. \"Error 400\" means the key is wrong \u2014 the API reports a bad token as 400, not 401."},
+ {img:"step-10b.webp",part:"C",title:"Start it and watch",
+  body:"Tick your options, then <b>Start import</b>. The browser asks you to confirm the job count first \u2014 click OK. The bar then runs through the phases in order: matching existing records, then customers, services, vehicles, jobs and finally historical payments.",
+  hs:[49.6,90.5],
+  note:"Leave the tab open and don't navigate away. The import runs from this page \u2014 closing it stops the run partway."},
+ {img:"step-10c.webp",part:"C",title:"Read the summary",
+  body:"When it finishes you get counts for everything created, matched and skipped \u2014 and, in red, anything that failed with the reason. This real run did <b>95 jobs created, 3 already imported (skipped), 20 customers, 35 vehicles, 9 historical payments</b> \u2014 and <b>14 jobs failed</b> because those field jobs had no customer address in the source file.",
+  hs:[49.6,85.0],
+  note:"Failures are normal and safe: the rest still imported. Fix the underlying data (here, add addresses) and re-run the same file \u2014 already-imported jobs are skipped, so only the failures get retried."},
  {img:"step-11.webp",part:"D",title:"Products & services",
   body:"Same flow in the second box. Tiered menus come through grouped \u2014 a service priced for Coupe / Sedan / SUV becomes one service with three price points, not three services.",
   hs:[71.9,33.1]},

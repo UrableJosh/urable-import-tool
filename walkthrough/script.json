@@ -25,7 +25,7 @@
    "label": "Part D · Services & Jobs"
   }
  ],
- "step_count": 19,
+ "step_count": 21,
  "steps": [
   {
    "img": "step-01.webp",
@@ -157,23 +157,45 @@
    "img": "step-09.webp",
    "part": "C",
    "title": "Paste it into the tool",
-   "body": "Back in the import tool, switch to the <b>Import directly to Urable</b> tab and paste the key. Leave the server on <b>Production</b> and set the industry to match the shop.",
+   "body": "Back in the import tool, switch to the <b>Import directly to Urable</b> tab and paste the key. Set the server to match the account the key came from — <b>Production</b> for a live shop. Then set the industry to match.",
    "hs": [
     37.3,
     66.9
    ],
-   "note": "The key is used for that import only and is never stored. It stays in the browser tab."
+   "note": "The key is used for that import only and is never stored. It stays in the browser tab. The screenshots in this part were captured against a dev account, so they show Dev server."
   },
   {
    "img": "step-10.webp",
    "part": "C",
-   "title": "Test, then start",
-   "body": "Always click <b>Test connection</b> first — it confirms the key works before anything gets written. Leave <b>Also create vehicles</b> and <b>Tag each customer's origin</b> ticked unless you have a reason not to; the origin tag is what lets the shop report on migrated vs. new customers later. Then <b>Start import</b>.",
+   "title": "Test the connection first",
+   "body": "Click <b>Test connection</b> before anything else. <b>✓ Connected</b> means the key and the server match and the import can write. Anything else and you stop here — a bad key wastes a long run.",
    "hs": [
-    70,
-    66.9
+    66.3,
+    72.6
    ],
-   "note": "There is no bulk undo. Imports are safe to re-run — the tool scans the account first and matches records that already exist — but nothing removes them once they're in."
+   "note": "The result only shows on the button for a few seconds. If you miss it, just click again. \"Error 400\" means the key is wrong — the API reports a bad token as 400, not 401."
+  },
+  {
+   "img": "step-10b.webp",
+   "part": "C",
+   "title": "Start it and watch",
+   "body": "Tick your options, then <b>Start import</b>. The browser asks you to confirm the job count first — click OK. The bar then runs through the phases in order: matching existing records, then customers, services, vehicles, jobs and finally historical payments.",
+   "hs": [
+    49.6,
+    90.5
+   ],
+   "note": "Leave the tab open and don't navigate away. The import runs from this page — closing it stops the run partway."
+  },
+  {
+   "img": "step-10c.webp",
+   "part": "C",
+   "title": "Read the summary",
+   "body": "When it finishes you get counts for everything created, matched and skipped — and, in red, anything that failed with the reason. This real run did <b>95 jobs created, 3 already imported (skipped), 20 customers, 35 vehicles, 9 historical payments</b> — and <b>14 jobs failed</b> because those field jobs had no customer address in the source file.",
+   "hs": [
+    49.6,
+    85
+   ],
+   "note": "Failures are normal and safe: the rest still imported. Fix the underlying data (here, add addresses) and re-run the same file — already-imported jobs are skipped, so only the failures get retried."
   },
   {
    "img": "step-11.webp",
