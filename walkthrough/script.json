@@ -42,7 +42,7 @@
    "img": "step-02.webp",
    "part": "A",
    "title": "Check what it detected",
-   "body": "Drop the file and the tool names the format it recognised — here <b>Mobile Tech RX</b>. The right-hand count is what matters: how many customers came through, and how many duplicates it merged. If that number looks wildly wrong, stop and look at the file before going further.",
+   "body": "Drop the file and the tool automatically determines the source — here <b>Mobile Tech RX</b>. The right-hand count is what matters: how many customers came through, and how many duplicates it merged. If that number looks wildly wrong, stop and look at the file before going further.",
    "hs": [
     71.4,
     33.1
@@ -52,7 +52,7 @@
    "img": "step-03.webp",
    "part": "A",
    "title": "Read the preview",
-   "body": "The first five rows, mapped into the Urable template. Spot-check them: names in the right fields, phone numbers intact, addresses where you expect. Two people on one phone number stay two customers — households share a home phone, so the tool only merges when the names match too.",
+   "body": "The first five rows, mapped into the Urable template. Spot-check them: names in the right fields, phone numbers intact, addresses where you expect. The customer list is de-duplicated automatically.",
    "hs": [
     50,
     51
@@ -61,8 +61,8 @@
   {
    "img": "step-04.webp",
    "part": "A",
-   "title": "Download the CSV",
-   "body": "Click <b>Download Urable-ready CSV</b> and send it to the onboarding specialist, or upload it yourself if CSV import is enabled on the account. This is the normal path and the safest one, because a human sees the file before anything is written.",
+   "title": "Analytics import method",
+   "body": "Click <b>Download Urable-ready CSV</b>, then upload it through the standard import in Analytics. This is the normal path and the safest one, because a human sees the file before anything is written.",
    "hs": [
     33,
     88.4
@@ -103,8 +103,8 @@
   {
    "img": "step-08.webp",
    "part": "B",
-   "title": "Same preview, same download",
-   "body": "After Apply you're back on the standard preview and the flow is identical to Part A — check the rows, then download the CSV or switch to the direct import.",
+   "title": "Review the preview",
+   "body": "You're back on the standard preview and the flow is identical to Part A — check the rows, then download the CSV or switch to the direct import.",
    "hs": [
     50,
     51
@@ -113,13 +113,13 @@
   {
    "img": "step-09a.webp",
    "part": "C",
-   "title": "Find the API keys",
-   "body": "The direct import needs an API key from the <b>customer's</b> Urable account, not yours. In their account go to <b>Settings</b>, scroll to the <b>Developer</b> section, and click <b>+ CREATE API KEY</b>. This needs an admin login.",
+   "title": "Create the API key",
+   "body": "Connect to their account. In their account go to <b>Settings</b>, scroll to the <b>Developer</b> section, and click <b>+ CREATE API KEY</b>.",
    "hs": [
     75.1,
     64.9
    ],
-   "note": "Existing keys are listed here with their scopes. If a shop already has a key you can't read it — keys are only ever shown once — so just create a new one."
+   "note": "Don't revoke any keys the customer created themselves — only ever add a new one."
   },
   {
    "img": "step-09b.webp",
@@ -134,57 +134,56 @@
   {
    "img": "step-09c.webp",
    "part": "C",
-   "title": "Tick every scope",
-   "body": "Select <b>all</b> of the scopes listed. The importer touches customers, items, products, jobs, payments and more, and a key missing even one scope fails partway through the import rather than up front. There's no downside to granting them all on a key you revoke afterwards.",
+   "title": "Check off all the boxes",
+   "body": "Select <b>every</b> scope in the list, then click the green check mark to save.",
    "hs": [
     36.2,
     55.4
-   ],
-   "note": "Scroll the whole list — the scopes continue past the bottom of the panel. All sixteen should be checked before you save."
+   ]
   },
   {
    "img": "step-09d.webp",
    "part": "C",
-   "title": "Copy it now",
-   "body": "The key is shown <b>once</b>. Copy it with the icon on the right and paste it straight into the import tool before you click Done. Once this dialog closes there is no way to see it again.",
+   "title": "Copy it, then paste it in",
+   "body": "Copy the key, click <b>Done</b>, and paste it into the import tool. There is no way to see it again once you exit this dialog.",
    "hs": [
     62.6,
     53.2
    ],
-   "note": "Lost it? No problem — you can't recover a key, but you can create another one in seconds. Revoke the old one so it doesn't linger."
+   "note": "Lost it? You can't recover a key, but you can create another in seconds."
   },
   {
    "img": "step-09.webp",
    "part": "C",
    "title": "Paste it into the tool",
-   "body": "Back in the import tool, switch to the <b>Import directly to Urable</b> tab and paste the key. Set the server to match the account the key came from — <b>Production</b> for a live shop. Then set the industry to match.",
+   "body": "Back in the import tool, switch to the <b>Import directly to Urable</b> tab and paste the key. Make sure the server says <b>Production</b> — it's the default, so it should already be set. Then pick the industry that matches the shop.",
    "hs": [
     37.3,
     66.9
    ],
-   "note": "The key is used for that import only and is never stored. It stays in the browser tab. The screenshots in this part were captured against a dev account, so they show Dev server."
+   "note": "The key is used for that import only and is never stored. It stays in the browser tab."
   },
   {
    "img": "step-c1.webp",
    "part": "C",
    "title": "Test the connection first",
-   "body": "Click <b>Test connection</b> before anything else. <b>✓ Connected</b> means the key and the server match and the import can write. Anything else, stop here — a bad key wastes the whole run.",
+   "body": "Check <b>Production</b> is selected, then click <b>Test connection</b>. You want <b>✓ Connected</b> before going any further — anything else and you stop here, because a bad key wastes the whole run.",
    "hs": [
     66.3,
     72.7
    ],
-   "note": "The result only shows on the button for a few seconds. If you miss it, click again. \"Error 400\" means the key is wrong — the API reports a bad token as 400, not 401."
+   "note": "The result only shows on the button for a few seconds. If you miss it, click again. \"Error 400\" means the key is wrong."
   },
   {
    "img": "step-c2.webp",
    "part": "C",
    "title": "Start it and read the result",
-   "body": "Tick your options, then <b>Start import</b> and confirm the count when the browser asks. When it finishes you get a plain summary — here <b>19 customers created, 20 vehicles added</b>. Open the Urable account and spot-check a few before telling the shop it's done.",
+   "body": "Check both boxes below the API key field, then <b>Start import</b> and confirm the count when the browser asks. When it finishes you get a plain summary — here <b>19 customers created, 20 vehicles added</b>. Open the Urable account and spot-check a few before telling the shop it's done.",
    "hs": [
     49.6,
     84.2
    ],
-   "note": "Heads up: the customers import creates every row it is given — it does not match against people already in the account. Run it once. If you need a second pass, check what is already there first."
+   "note": "The de-duplication happens only within the file you're importing — it does not check against customers already in their Urable account."
   },
   {
    "img": "step-11.webp",
