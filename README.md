@@ -32,6 +32,7 @@ After either, wait 60–90s, then verify with a cache-busted URL
 ## Supported formats
 - **Customers:** Jobber, Shopmonkey (incl. Fleet), Fieldd, Square, EBMS,
   GoHighLevel, TintWiz, Detail Bookie, HubSpot, Stripe, Mobile Tech RX,
+  Urable customer export,
   QuickBooks-style, Urable template, plus a column mapper for anything else.
 - **Products/Services:** Jobber, Square catalog, Housecall Pro, Urable template
   (current + legacy single-price), tiered-variant sheets, generic services sheets.

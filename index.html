@@ -696,6 +696,31 @@ function abbrState(v){
   if(/^[A-Za-z]{2}$/.test(st)) return st.toUpperCase();
   return STATE_ABBR[st.toLowerCase()]||st;
 }
+// ─── Urable customers export ────────────────────────────────────────────────
+// The account's own customer export (not the import template): ID, Type, Status,
+// First/Last Name, Amount Spent, address block, Items, Notes, Origin...
+// Comes up whenever data moves between two Urable accounts.
+function convertUrableCust(data){
+  const out=[];
+  for(const r of data){
+    const first=cl(r['First Name']), last=cl(r['Last Name']);
+    const phone=usPhone(r['Phone Number']);
+    const email=cleanEmail(r['Email']);
+    if(!first&&!last&&!phone&&!email) continue;
+    const type=cl(r['Type']).toLowerCase()==='business'?'Business':'Person';
+    const np=[];
+    // amountSpent isn't writable over the API — preserve it in Notes instead
+    const spent=cl(r['Amount Spent']).replace(/[^0-9.]/g,'');
+    if(spent&&parseFloat(spent)>0) np.push('Total spent: $'+cl(r['Amount Spent']).replace(/^\$/,''));
+    const origin=cl(r['Origin']); if(origin) np.push('Origin: '+origin);
+    const existing=cl(r['Notes']); if(existing) np.push(existing);
+    out.push([first,last,type,
+      cl(r['Address Line 1']),cl(r['Address Line 2']),cl(r['City']),cl(r['State']),
+      cl(r['Postal Code']),cl(r['Country']),phone,email,np.join(' | '),cl(r['Items'])]);
+  }
+  return dedup(out);
+}
+
 function convertMTRX(data){
   const BIZ=['llc','inc','corp','co.','auto','shop','hauling','towing','detailing','collision',
     'motors','garage','services','solutions','group','enterprises','company','contracting'];
@@ -1328,6 +1353,7 @@ function detectPlatform(filename, headers, rawRows){
   if(h.includes('mobile_phone')&&h.includes('ts_created')&&h.includes('completed_jobs')) return 'detailbookie';
   if(fn.includes('hubspot')||( h.includes('record id')&&h.includes('lead status'))) return 'hubspot';
   if(h.includes('total spend')&&h.includes('payment count')) return 'stripe';
+  if(h.includes('amount spent')&&h.includes('credit balance')&&h.includes('referral code')) return 'urablecust';
   if(fn.includes('mobiletechrx')||fn.includes('mtrx')||
      (h.includes('add_date')&&h.includes('category')&&h.includes('street')&&h.includes('name'))) return 'mtrx';
   if(h.includes('instant profile')) return 'squarealt';
@@ -1532,6 +1558,7 @@ function processRaw(raw, filename){
       else if(platform==='hubspot') rows=convertHubSpot(rawObjRows);
       else if(platform==='stripe') rows=convertStripe(rawObjRows);
       else if(platform==='mtrx') rows=convertMTRX(rawObjRows);
+      else if(platform==='urablecust') rows=convertUrableCust(rawObjRows);
       else if(platform==='squarealt') rows=convertSquareAlt(rawObjRows);
       else if(platform==='jobsexport') rows=convertJobsExport(rawObjRows);
       else if(platform==='urable') rows=dedup(rawObjRows.map(r=>HEADERS.map(h=>cl(r[h]))).filter(r=>r.some(v=>v)));
@@ -1546,7 +1573,7 @@ function processRaw(raw, filename){
   currentKind='customers';
   convertedRows=rows;
   let dupes=dupesBefore>0?Math.max(0,dupesBefore-rows.length):0;
-  let names={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template'};
+  let names={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template'};
   sourcePlatformName=names[platform];
   document.getElementById('originName').textContent=sourcePlatformName;
   showDetected(names[platform], rows.length, dupes);
