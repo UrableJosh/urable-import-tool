@@ -221,7 +221,7 @@
   </div>
 
   <div class="caption">
-    <div class="step-no"><small>Step</small><span id="stepNum">1</span>/21</div>
+    <div class="step-no"><small>Step</small><span id="stepNum">1</span>/23</div>
     <div class="step-text">
       <h2 id="stepTitle"></h2>
       <p id="stepBody"></p>
@@ -282,18 +282,14 @@ const steps=[
   body:"Back in the import tool, switch to the <b>Import directly to Urable</b> tab and paste the key. Set the server to match the account the key came from \u2014 <b>Production</b> for a live shop. Then set the industry to match.",
   hs:[37.3,66.9],
   note:"The key is used for that import only and is never stored. It stays in the browser tab. The screenshots in this part were captured against a dev account, so they show Dev server."},
-  {img:"step-10.webp",part:"C",title:"Test the connection first",
-  body:"Click <b>Test connection</b> before anything else. <b>\u2713 Connected</b> means the key and the server match and the import can write. Anything else and you stop here \u2014 a bad key wastes a long run.",
-  hs:[66.3,72.6],
-  note:"The result only shows on the button for a few seconds. If you miss it, just click again. \"Error 400\" means the key is wrong \u2014 the API reports a bad token as 400, not 401."},
- {img:"step-10b.webp",part:"C",title:"Start it and watch",
-  body:"Tick your options, then <b>Start import</b>. The browser asks you to confirm the job count first \u2014 click OK. The bar then runs through the phases in order: matching existing records, then customers, services, vehicles, jobs and finally historical payments.",
-  hs:[49.6,90.5],
-  note:"Leave the tab open and don't navigate away. The import runs from this page \u2014 closing it stops the run partway."},
- {img:"step-10c.webp",part:"C",title:"Read the summary",
-  body:"When it finishes you get counts for everything created, matched and skipped \u2014 and, in red, anything that failed with the reason. This real run did <b>95 jobs created, 3 already imported (skipped), 20 customers, 35 vehicles, 9 historical payments</b> \u2014 and <b>14 jobs failed</b> because those field jobs had no customer address in the source file.",
-  hs:[49.6,85.0],
-  note:"Failures are normal and safe: the rest still imported. Fix the underlying data (here, add addresses) and re-run the same file \u2014 already-imported jobs are skipped, so only the failures get retried."},
+   {img:"step-c1.webp",part:"C",title:"Test the connection first",
+  body:"Click <b>Test connection</b> before anything else. <b>\u2713 Connected</b> means the key and the server match and the import can write. Anything else, stop here \u2014 a bad key wastes the whole run.",
+  hs:[66.3,72.7],
+  note:"The result only shows on the button for a few seconds. If you miss it, click again. \"Error 400\" means the key is wrong \u2014 the API reports a bad token as 400, not 401."},
+ {img:"step-c2.webp",part:"C",title:"Start it and read the result",
+  body:"Tick your options, then <b>Start import</b> and confirm the count when the browser asks. When it finishes you get a plain summary \u2014 here <b>19 customers created, 20 vehicles added</b>. Open the Urable account and spot-check a few before telling the shop it's done.",
+  hs:[49.6,84.2],
+  note:"Heads up: the customers import creates every row it is given \u2014 it does not match against people already in the account. Run it once. If you need a second pass, check what is already there first."},
  {img:"step-11.webp",part:"D",title:"Products & services",
   body:"Same flow in the second box. Tiered menus come through grouped \u2014 a service priced for Coupe / Sedan / SUV becomes one service with three price points, not three services.",
   hs:[71.9,33.1]},
@@ -309,7 +305,18 @@ const steps=[
  {img:"step-15.webp",part:"D",title:"The one decision that matters",
   body:"<b>Add each historical service to the catalog</b> \u2014 leave this <b>unchecked</b> on an account that already has a real service menu. Historical jobs then bill against a single generic \"Imported historical service\" entry, with the real names preserved in each job's notes, so the shop's live catalog stays clean. Tick it only on a fresh account with no menu yet.",
   hs:[25.7,73.9],
-  note:"Run the customers import first, confirm it looks right, then run jobs. The jobs pass matches existing customers rather than recreating them.",
+  note:"Run the customers import first, confirm it looks right, then run jobs. The jobs pass matches existing customers rather than recreating them."},
+ {img:"step-10.webp",part:"D",title:"Test, then start the jobs run",
+  body:"Jobs is API-only, so the same key flow applies: <b>Test connection</b> first, then <b>Start import</b>. A jobs run is much bigger than a customer one \u2014 it creates customers, services, vehicles, jobs and payments in a single pass.",
+  hs:[66.3,72.6],
+  note:"Leave the tab open and don't navigate away. The import runs from this page \u2014 closing it stops the run partway."},
+ {img:"step-10b.webp",part:"D",title:"Watch the phases",
+  body:"The bar runs through the phases in order: matching existing records, then customers, services, vehicles, jobs, and finally historical payments. On a real migration this takes a while \u2014 178 operations here.",
+  hs:[49.6,90.5]},
+ {img:"step-10c.webp",part:"D",title:"Read the jobs summary",
+  body:"Counts for everything created, matched and skipped \u2014 and in red, anything that failed with the reason. This real run did <b>95 jobs created, 3 already imported (skipped), 20 customers, 35 vehicles, 9 historical payments</b> \u2014 and <b>14 jobs failed</b> because those field jobs had no customer address in the source file.",
+  hs:[49.6,85.0],
+  note:"Failures are safe: everything else still imported. Fix the underlying data and re-run the same file \u2014 the jobs pass skips what it already imported, so only the failures get retried.",
   finish:true}
 ];
 
