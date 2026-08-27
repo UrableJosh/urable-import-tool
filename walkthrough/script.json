@@ -25,7 +25,7 @@
    "label": "Part D · Services & Jobs"
   }
  ],
- "step_count": 15,
+ "step_count": 19,
  "steps": [
   {
    "img": "step-01.webp",
@@ -111,10 +111,53 @@
    ]
   },
   {
+   "img": "step-09a.webp",
+   "part": "C",
+   "title": "Find the API keys",
+   "body": "The direct import needs an API key from the <b>customer's</b> Urable account, not yours. In their account go to <b>Settings</b>, scroll to the <b>Developer</b> section, and click <b>+ CREATE API KEY</b>. This needs an admin login.",
+   "hs": [
+    75.1,
+    64.9
+   ],
+   "note": "Existing keys are listed here with their scopes. If a shop already has a key you can't read it — keys are only ever shown once — so just create a new one."
+  },
+  {
+   "img": "step-09b.webp",
+   "part": "C",
+   "title": "Name it",
+   "body": "Call it <b>Urable Import</b>. The name is only a label, but a clear one means the shop knows what it's for later and can revoke it safely once the migration is done.",
+   "hs": [
+    49.6,
+    34.8
+   ]
+  },
+  {
+   "img": "step-09c.webp",
+   "part": "C",
+   "title": "Tick every scope",
+   "body": "Select <b>all</b> of the scopes listed. The importer touches customers, items, products, jobs, payments and more, and a key missing even one scope fails partway through the import rather than up front. There's no downside to granting them all on a key you revoke afterwards.",
+   "hs": [
+    36.2,
+    55.4
+   ],
+   "note": "Scroll the whole list — the scopes continue past the bottom of the panel. All sixteen should be checked before you save."
+  },
+  {
+   "img": "step-09d.webp",
+   "part": "C",
+   "title": "Copy it now",
+   "body": "The key is shown <b>once</b>. Copy it with the icon on the right and paste it straight into the import tool before you click Done. Once this dialog closes there is no way to see it again.",
+   "hs": [
+    62.6,
+    53.2
+   ],
+   "note": "Lost it? No problem — you can't recover a key, but you can create another one in seconds. Revoke the old one so it doesn't linger."
+  },
+  {
    "img": "step-09.webp",
    "part": "C",
-   "title": "Switch to direct import",
-   "body": "The <b>Import directly to Urable</b> tab writes straight into the shop's account. You'll need an API key from <b>their</b> account: Settings &rarr; Developer &rarr; API Keys &rarr; Create API key. Requires an admin login. Leave the server on <b>Production</b> and set the industry to match the shop.",
+   "title": "Paste it into the tool",
+   "body": "Back in the import tool, switch to the <b>Import directly to Urable</b> tab and paste the key. Leave the server on <b>Production</b> and set the industry to match the shop.",
    "hs": [
     37.3,
     66.9

@@ -206,7 +206,7 @@
     <button class="part-tab" id="tabA" onclick="goTo(0)">Part A · Customers</button>
     <button class="part-tab" id="tabB" onclick="goTo(4)">Part B · Unknown Formats</button>
     <button class="part-tab" id="tabC" onclick="goTo(8)">Part C · Import to Urable</button>
-    <button class="part-tab" id="tabD" onclick="goTo(10)">Part D · Services & Jobs</button>
+    <button class="part-tab" id="tabD" onclick="goTo(14)">Part D · Services & Jobs</button>
   </div>
 </header>
 
@@ -221,7 +221,7 @@
   </div>
 
   <div class="caption">
-    <div class="step-no"><small>Step</small><span id="stepNum">1</span>/<span id="stepTot">15</span></div>
+    <div class="step-no"><small>Step</small><span id="stepNum">1</span>/19</div>
     <div class="step-text">
       <h2 id="stepTitle"></h2>
       <p id="stepBody"></p>
@@ -237,54 +237,69 @@
 <script>
 const steps=[
  {img:"step-01.webp",part:"A",title:"Open the tool",
-  body:"Go to <b>urable-import-tool.vercel.app</b> and bookmark it. Nothing to download or install — it always loads the current version, so just refresh if something looks off. Three boxes: <b>Customers</b>, <b>Products &amp; Services</b>, <b>Jobs History</b>. Drop the shop's export into whichever one matches.",
+  body:"Go to <b>urable-import-tool.vercel.app</b> and bookmark it. Nothing to download or install \u2014 it always loads the current version, so just refresh if something looks off. Three boxes: <b>Customers</b>, <b>Products &amp; Services</b>, <b>Jobs History</b>. Drop the shop's export into whichever one matches.",
   hs:[50,46.4],
-  note:"Everything is processed inside your own browser. Customer files are never uploaded to a server. The one exception is the direct API import, which writes into the shop's Urable account — which is what you asked it to do."},
+  note:"Everything is processed inside your own browser. Customer files are never uploaded to a server. The one exception is the direct API import, which writes into the shop's Urable account \u2014 which is what you asked it to do."},
  {img:"step-02.webp",part:"A",title:"Check what it detected",
-  body:"Drop the file and the tool names the format it recognised — here <b>Mobile Tech RX</b>. The right-hand count is what matters: how many customers came through, and how many duplicates it merged. If that number looks wildly wrong, stop and look at the file before going further.",
+  body:"Drop the file and the tool names the format it recognised \u2014 here <b>Mobile Tech RX</b>. The right-hand count is what matters: how many customers came through, and how many duplicates it merged. If that number looks wildly wrong, stop and look at the file before going further.",
   hs:[71.4,33.1]},
  {img:"step-03.webp",part:"A",title:"Read the preview",
-  body:"The first five rows, mapped into the Urable template. Spot-check them: names in the right fields, phone numbers intact, addresses where you expect. Two people on one phone number stay two customers — households share a home phone, so the tool only merges when the names match too.",
+  body:"The first five rows, mapped into the Urable template. Spot-check them: names in the right fields, phone numbers intact, addresses where you expect. Two people on one phone number stay two customers \u2014 households share a home phone, so the tool only merges when the names match too.",
   hs:[50,51]},
  {img:"step-04.webp",part:"A",title:"Download the CSV",
   body:"Click <b>Download Urable-ready CSV</b> and send it to the onboarding specialist, or upload it yourself if CSV import is enabled on the account. This is the normal path and the safest one, because a human sees the file before anything is written.",
   hs:[33,88.4],
-  note:"The file comes out at exactly 13 columns with no blank rows — nothing past the Item column. That's deliberate: the Urable importer rejects files with stray columns hanging off the end."},
+  note:"The file comes out at exactly 13 columns with no blank rows \u2014 nothing past the Item column. That's deliberate: the Urable importer rejects files with stray columns hanging off the end."},
  {img:"step-05.webp",part:"B",title:"When the format isn't recognised",
-  body:"If the columns are tidy but the system is one the tool hasn't seen, you get <b>Map your columns</b> instead of a preview. This is normal and it's still a two-minute job — you're just telling the tool which column is which.",
+  body:"If the columns are tidy but the system is one the tool hasn't seen, you get <b>Map your columns</b> instead of a preview. This is normal and it's still a two-minute job \u2014 you're just telling the tool which column is which.",
   hs:[50,19.2]},
  {img:"step-06.webp",part:"B",title:"Match the columns",
-  body:"Each Urable field gets a dropdown. The tool pre-fills its best guesses and highlights them <b>green</b> — check those first, they're usually right. Set anything irrelevant to <b>— skip —</b>. If the file has one full-name column, pick it for First Name and the tool splits it.",
+  body:"Each Urable field gets a dropdown. The tool pre-fills its best guesses and highlights them <b>green</b> \u2014 check those first, they're usually right. Set anything irrelevant to <b>\u2014 skip \u2014</b>. If the file has one full-name column, pick it for First Name and the tool splits it.",
   hs:[55.7,45.0]},
  {img:"step-07.webp",part:"B",title:"Keep everything, then apply",
-  body:"Leave <b>Add all unmapped columns to Notes</b> ticked. Anything you didn't map lands in the customer's Notes instead of being thrown away — lead source, tags, account numbers. Then click <b>Apply mapping</b>.",
+  body:"Leave <b>Add all unmapped columns to Notes</b> ticked. Anything you didn't map lands in the customer's Notes instead of being thrown away \u2014 lead source, tags, account numbers. Then click <b>Apply mapping</b>.",
   hs:[25.7,82.1],
   note:"Not confident about a mapping? Send the file to Claire instead of guessing. She has a Claude skill that cleans messy lists into the Urable template, and the cleaned file drops straight back into this tool."},
  {img:"step-08.webp",part:"B",title:"Same preview, same download",
-  body:"After Apply you're back on the standard preview and the flow is identical to Part A — check the rows, then download the CSV or switch to the direct import.",
+  body:"After Apply you're back on the standard preview and the flow is identical to Part A \u2014 check the rows, then download the CSV or switch to the direct import.",
   hs:[50,51]},
- {img:"step-09.webp",part:"C",title:"Switch to direct import",
-  body:"The <b>Import directly to Urable</b> tab writes straight into the shop's account. You'll need an API key from <b>their</b> account: Settings &rarr; Developer &rarr; API Keys &rarr; Create API key. Requires an admin login. Leave the server on <b>Production</b> and set the industry to match the shop.",
+ {img:"step-09a.webp",part:"C",title:"Find the API keys",
+  body:"The direct import needs an API key from the <b>customer's</b> Urable account, not yours. In their account go to <b>Settings</b>, scroll to the <b>Developer</b> section, and click <b>+ CREATE API KEY</b>. This needs an admin login.",
+  hs:[75.1,64.9],
+  note:"Existing keys are listed here with their scopes. If a shop already has a key you can't read it \u2014 keys are only ever shown once \u2014 so just create a new one."},
+ {img:"step-09b.webp",part:"C",title:"Name it",
+  body:"Call it <b>Urable Import</b>. The name is only a label, but a clear one means the shop knows what it's for later and can revoke it safely once the migration is done.",
+  hs:[49.6,34.8]},
+ {img:"step-09c.webp",part:"C",title:"Tick every scope",
+  body:"Select <b>all</b> of the scopes listed. The importer touches customers, items, products, jobs, payments and more, and a key missing even one scope fails partway through the import rather than up front. There's no downside to granting them all on a key you revoke afterwards.",
+  hs:[36.2,55.4],
+  note:"Scroll the whole list \u2014 the scopes continue past the bottom of the panel. All sixteen should be checked before you save."},
+ {img:"step-09d.webp",part:"C",title:"Copy it now",
+  body:"The key is shown <b>once</b>. Copy it with the icon on the right and paste it straight into the import tool before you click Done. Once this dialog closes there is no way to see it again.",
+  hs:[62.6,53.2],
+  note:"Lost it? No problem \u2014 you can't recover a key, but you can create another one in seconds. Revoke the old one so it doesn't linger."},
+ {img:"step-09.webp",part:"C",title:"Paste it into the tool",
+  body:"Back in the import tool, switch to the <b>Import directly to Urable</b> tab and paste the key. Leave the server on <b>Production</b> and set the industry to match the shop.",
   hs:[37.3,66.9],
   note:"The key is used for that import only and is never stored. It stays in the browser tab."},
  {img:"step-10.webp",part:"C",title:"Test, then start",
-  body:"Always click <b>Test connection</b> first — it confirms the key works before anything gets written. Leave <b>Also create vehicles</b> and <b>Tag each customer's origin</b> ticked unless you have a reason not to; the origin tag is what lets the shop report on migrated vs. new customers later. Then <b>Start import</b>.",
+  body:"Always click <b>Test connection</b> first \u2014 it confirms the key works before anything gets written. Leave <b>Also create vehicles</b> and <b>Tag each customer's origin</b> ticked unless you have a reason not to; the origin tag is what lets the shop report on migrated vs. new customers later. Then <b>Start import</b>.",
   hs:[70,66.9],
-  note:"There is no bulk undo. Imports are safe to re-run — the tool scans the account first and matches records that already exist — but nothing removes them once they're in."},
+  note:"There is no bulk undo. Imports are safe to re-run \u2014 the tool scans the account first and matches records that already exist \u2014 but nothing removes them once they're in."},
  {img:"step-11.webp",part:"D",title:"Products & services",
-  body:"Same flow in the second box. Tiered menus come through grouped — a service priced for Coupe / Sedan / SUV becomes one service with three price points, not three services.",
+  body:"Same flow in the second box. Tiered menus come through grouped \u2014 a service priced for Coupe / Sedan / SUV becomes one service with three price points, not three services.",
   hs:[71.9,33.1]},
  {img:"step-12.webp",part:"D",title:"Check prices before importing",
   body:"Services vary wildly between systems, so this preview is worth more of your attention than the customer one. Check the prices and the variant labels against the shop's actual menu.",
   hs:[50,52.6]},
  {img:"step-13.webp",part:"D",title:"Jobs history",
-  body:"The third box is the full migration: past jobs with dates, vehicles, services, invoice amounts and historical payments. Note the second figure — total historical payments. Jobs are <b>API import only</b>; there's no CSV path.",
+  body:"The third box is the full migration: past jobs with dates, vehicles, services, invoice amounts and historical payments. Note the second figure \u2014 total historical payments. Jobs are <b>API import only</b>; there's no CSV path.",
   hs:[67.3,33.1]},
  {img:"step-14.webp",part:"D",title:"Review the jobs preview",
   body:"Job numbers, status, customer, vehicle, line items and amounts. Job totals are exact; the split across individual line items is approximate, because most source exports don't carry per-line prices.",
   hs:[50,37.7]},
  {img:"step-15.webp",part:"D",title:"The one decision that matters",
-  body:"<b>Add each historical service to the catalog</b> — leave this <b>unchecked</b> on an account that already has a real service menu. Historical jobs then bill against a single generic \"Imported historical service\" entry, with the real names preserved in each job's notes, so the shop's live catalog stays clean. Tick it only on a fresh account with no menu yet.",
+  body:"<b>Add each historical service to the catalog</b> \u2014 leave this <b>unchecked</b> on an account that already has a real service menu. Historical jobs then bill against a single generic \"Imported historical service\" entry, with the real names preserved in each job's notes, so the shop's live catalog stays clean. Tick it only on a fresh account with no menu yet.",
   hs:[25.7,73.9],
   note:"Run the customers import first, confirm it looks right, then run jobs. The jobs pass matches existing customers rather than recreating them.",
   finish:true}
