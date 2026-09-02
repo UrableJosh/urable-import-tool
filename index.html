@@ -55,6 +55,9 @@ tbody tr:last-child td{border-bottom:none}
 .btn.secondary{background:#fff;border:1px solid var(--line);color:var(--grey);font-weight:400;box-shadow:none}
 .btn.secondary:hover{background:var(--bg)}
 #results,#mapperCard{display:none}
+@keyframes justLanded{0%{box-shadow:0 0 0 0 rgba(47,210,168,.55)}100%{box-shadow:0 0 0 14px rgba(47,210,168,0)}}
+.just-landed{animation:justLanded 1.2s ease-out}
+@media (prefers-reduced-motion:reduce){.just-landed{animation:none}}
 /* mode tabs */
 .mode-tabs{display:flex;gap:0;margin-top:22px;border:1px solid var(--line);border-radius:8px;overflow:hidden;width:fit-content}
 .mode-tab{padding:9px 20px;font-size:13px;cursor:pointer;background:#fff;color:var(--grey);border:none;font-family:'Roboto',sans-serif}
@@ -155,66 +158,6 @@ tbody tr:last-child td{border-bottom:none}
   </div>
 
 
-  <!-- ── Account-to-account copy (API to API) ─────────────────────────────── -->
-  <div class="card" id="migCard">
-    <h2>Copy one account into another</h2>
-    <p class="sub">Opening a second location, or splitting a business into its own account? This copies customers, their vehicles, and the products &amp; services catalog straight from one Urable account into another &mdash; no export, no spreadsheet. Nothing is ever written to the account you copy <em>from</em>.</p>
-
-    <div class="api-row">
-      <select id="migSrcType" style="padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff">
-        <option value="urable">Copy from: Urable account</option>
-      </select>
-      <input type="password" id="migSrcKey" placeholder="SOURCE account API key (read-only use)" autocomplete="off">
-      <select id="migSrcEnv" style="padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff">
-        <option value="production">Production</option>
-        <option value="dev">Dev server</option>
-      </select>
-    </div>
-    <div class="api-row">
-      <span style="font-size:13px;color:var(--grey);min-width:150px">Copy into:</span>
-      <input type="password" id="migDstKey" placeholder="DESTINATION account API key" autocomplete="off">
-      <select id="migDstEnv" style="padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff">
-        <option value="production">Production</option>
-        <option value="dev">Dev server</option>
-      </select>
-    </div>
-
-    <div class="api-row">
-      <span style="font-size:13px;color:var(--grey);min-width:150px">Industry:</span>
-      <select id="migIndustry" style="padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff;flex:1;min-width:260px">
-        <option value="source">Keep each record's own industry (recommended)</option>
-        <option value="vehicleCare">Force everything to Vehicle Care</option>
-        <option value="lawnCare">Force everything to Lawn Care</option>
-        <option value="flatGlass">Force everything to Flat Glass</option>
-        <option value="other">Force everything to Other</option>
-      </select>
-    </div>
-
-    <div class="api-row" id="migCatRow">
-      <span style="font-size:13px;color:var(--grey);min-width:150px">Category names:</span>
-      <input type="file" id="migCatFile" accept=".csv,.xlsx,.xls" onchange="migLoadCatFile(this.files[0])"
-             style="flex:1;min-width:260px;font-size:12.5px;padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff">
-      <span id="migCatStatus" style="font-size:12.5px;color:var(--lt-grey)"></span>
-    </div>
-    <p class="api-note" style="margin-top:4px">Optional, and only needed if the preview says categories are unresolved: the API returns a product's category as an internal reference, not a name. Export Products/Services from the <em>source</em> account and drop it here &mdash; the copy reads the real category names from it.</p>
-
-    <div class="check-row"><input type="checkbox" id="migDoCust" checked><label for="migDoCust">Customers</label></div>
-    <div class="check-row"><input type="checkbox" id="migDoVeh" checked><label for="migDoVeh">Their vehicles / items</label></div>
-    <div class="check-row"><input type="checkbox" id="migDoProd" checked><label for="migDoProd">Products &amp; services (with their price points and categories)</label></div>
-
-    <div class="api-row" style="margin-top:16px">
-      <button class="btn secondary" id="migPreviewBtn" onclick="migPreview()">Preview &mdash; read only</button>
-      <button class="btn" id="migRunBtn" onclick="migStart()" disabled>Start copy</button>
-    </div>
-
-    <div class="progress-wrap" id="migProgressWrap">
-      <div class="progress-bar"><div class="progress-fill" id="migProgressFill"></div></div>
-      <div class="progress-text" id="migProgressText"></div>
-    </div>
-    <div class="import-log" id="migLog"></div>
-    <div class="summary-box" id="migSummary"></div>
-    <p class="api-note">The preview only reads. It reports exactly what would be created, what already matches, and any field that would not carry across &mdash; <strong>Start copy</strong> stays disabled until you have run it. Both keys stay in this browser tab.</p>
-  </div>
 
   <div class="card" id="statusCard" style="display:none;padding:16px 28px">
     <div class="detected" id="detected" style="margin-top:0">
@@ -299,6 +242,67 @@ tbody tr:last-child td{border-bottom:none}
       <div class="summary-box" id="summaryBox"></div>
       <p class="api-note">Build <span id="buildStamp"></span> &mdash; hard-refresh (Ctrl/Cmd&#8209;Shift&#8209;R) after replacing this file, or the browser keeps serving the old one.<br>Your API key stays in this browser tab &mdash; it is only ever sent to <code>app.urable.com</code> and is never stored. Imports run at a safe pace well under Urable's rate limit.</p>
     </div>
+  </div>
+
+  <!-- ── Account-to-account copy (API to API) ─────────────────────────────── -->
+  <div class="card" id="migCard">
+    <h2>Copy one account into another</h2>
+    <p class="sub">Opening a second location, or splitting a business into its own account? This copies customers, their vehicles, and the products &amp; services catalog straight from one Urable account into another &mdash; no export, no spreadsheet. Nothing is ever written to the account you copy <em>from</em>.</p>
+
+    <div class="api-row">
+      <select id="migSrcType" style="padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff">
+        <option value="urable">Copy from: Urable account</option>
+      </select>
+      <input type="password" id="migSrcKey" placeholder="SOURCE account API key (read-only use)" autocomplete="off">
+      <select id="migSrcEnv" style="padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff">
+        <option value="production">Production</option>
+        <option value="dev">Dev server</option>
+      </select>
+    </div>
+    <div class="api-row">
+      <span style="font-size:13px;color:var(--grey);min-width:150px">Copy into:</span>
+      <input type="password" id="migDstKey" placeholder="DESTINATION account API key" autocomplete="off">
+      <select id="migDstEnv" style="padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff">
+        <option value="production">Production</option>
+        <option value="dev">Dev server</option>
+      </select>
+    </div>
+
+    <div class="api-row">
+      <span style="font-size:13px;color:var(--grey);min-width:150px">Industry:</span>
+      <select id="migIndustry" style="padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff;flex:1;min-width:260px">
+        <option value="source">Keep each record's own industry (recommended)</option>
+        <option value="vehicleCare">Force everything to Vehicle Care</option>
+        <option value="lawnCare">Force everything to Lawn Care</option>
+        <option value="flatGlass">Force everything to Flat Glass</option>
+        <option value="other">Force everything to Other</option>
+      </select>
+    </div>
+
+    <div class="api-row" id="migCatRow">
+      <span style="font-size:13px;color:var(--grey);min-width:150px">Category names:</span>
+      <input type="file" id="migCatFile" accept=".csv,.xlsx,.xls" onchange="migLoadCatFile(this.files[0])"
+             style="flex:1;min-width:260px;font-size:12.5px;padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff">
+      <span id="migCatStatus" style="font-size:12.5px;color:var(--lt-grey)"></span>
+    </div>
+    <p class="api-note" style="margin-top:4px">Optional, and only needed if the preview says categories are unresolved: the API returns a product's category as an internal reference, not a name. Export Products/Services from the <em>source</em> account and drop it here &mdash; the copy reads the real category names from it.</p>
+
+    <div class="check-row"><input type="checkbox" id="migDoCust" checked><label for="migDoCust">Customers</label></div>
+    <div class="check-row"><input type="checkbox" id="migDoVeh" checked><label for="migDoVeh">Their vehicles / items</label></div>
+    <div class="check-row"><input type="checkbox" id="migDoProd" checked><label for="migDoProd">Products &amp; services (with their price points and categories)</label></div>
+
+    <div class="api-row" style="margin-top:16px">
+      <button class="btn secondary" id="migPreviewBtn" onclick="migPreview()">Preview &mdash; read only</button>
+      <button class="btn" id="migRunBtn" onclick="migStart()" disabled>Start copy</button>
+    </div>
+
+    <div class="progress-wrap" id="migProgressWrap">
+      <div class="progress-bar"><div class="progress-fill" id="migProgressFill"></div></div>
+      <div class="progress-text" id="migProgressText"></div>
+    </div>
+    <div class="import-log" id="migLog"></div>
+    <div class="summary-box" id="migSummary"></div>
+    <p class="api-note">The preview only reads. It reports exactly what would be created, what already matches, and any field that would not carry across &mdash; <strong>Start copy</strong> stays disabled until you have run it. Both keys stay in this browser tab.</p>
   </div>
 </main>
 
@@ -1893,6 +1897,7 @@ function openMapper(){
     tb.innerHTML+='<tr><td class="map-field">'+field+'</td><td><select data-field="'+field+'"'+(g?' class="guessed"':'')+'>'+opts+'</select></td></tr>';
   }
   document.getElementById('mapperCard').style.display='block';
+  revealResult(document.getElementById('mapperCard'));
   document.getElementById('results').style.display='none';
   document.getElementById('detected').classList.remove('show');
 }
@@ -1964,6 +1969,21 @@ async function claudeSuggestMapping(headers, sampleRows){
 }
 
 // ─── UI helpers ─────────────────────────────────────────────────────────────
+// A dropped file renders its result further down the page than the drop zone,
+// so on a laptop nothing appears to happen. Bring the result to the user and
+// flash it once, rather than relying on them to scroll and find it.
+function revealResult(el){
+  if(!el) return;
+  requestAnimationFrame(()=>{
+    const top=el.getBoundingClientRect().top+window.scrollY-16;
+    try{ window.scrollTo({top,behavior:'smooth'}); }catch(e){ window.scrollTo(0,top); }
+    el.classList.remove('just-landed');
+    void el.offsetWidth;              // restart the animation if it re-fires
+    el.classList.add('just-landed');
+    setTimeout(()=>el.classList.remove('just-landed'),1600);
+  });
+}
+
 function showDetected(platform, count, dupes){
   document.getElementById('statusCard').style.display='block';
   let d=document.getElementById('detected');
@@ -1972,6 +1992,7 @@ function showDetected(platform, count, dupes){
   document.getElementById('detStats').textContent=
     count.toLocaleString()+(currentKind==='products'?' services':' customers')+(dupes>0?' · '+dupes+' duplicates removed':'');
   d.classList.add('show');
+  revealResult(document.getElementById('statusCard'));
 }
 
 function showPreview(rows){
@@ -2006,6 +2027,7 @@ function showError(msg){
   b.textContent='⚠ '+msg;
   b.classList.add('show');
   document.getElementById('results').style.display='none';
+  revealResult(document.getElementById('statusCard'));
 }
 function hideError(){ document.getElementById('errorBox').classList.remove('show'); }
 function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
