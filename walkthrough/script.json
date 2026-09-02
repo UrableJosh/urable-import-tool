@@ -35,7 +35,7 @@
    "img": "step-01.webp",
    "part": "A",
    "title": "Open the tool",
-   "body": "Go to <b>urable-import-tool.vercel.app</b> and bookmark it. Nothing to download or install — it always loads the current version, so just refresh if something looks off. Three boxes: <b>Customers</b>, <b>Products &amp; Services</b>, <b>Jobs History</b>. Drop the shop's export into whichever one matches.",
+   "body": "Go to <b>urable-import-tool.vercel.app</b> and bookmark it. Nothing to download or install — it always loads the current version, so just refresh if something looks off. There are four sections: <b>Customers</b>, <b>Products &amp; Services</b>, <b>Jobs History</b>, and — further down the page — <b>Copy one account into another</b>. Drop the shop's export into whichever box matches.",
    "hs": [
     50,
     46.4
