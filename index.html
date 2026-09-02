@@ -154,6 +154,68 @@ tbody tr:last-child td{border-bottom:none}
     </div>
   </div>
 
+
+  <!-- ── Account-to-account copy (API to API) ─────────────────────────────── -->
+  <div class="card" id="migCard">
+    <h2>Copy one account into another</h2>
+    <p class="sub">Opening a second location, or splitting a business into its own account? This copies customers, their vehicles, and the products &amp; services catalog straight from one Urable account into another &mdash; no export, no spreadsheet. Nothing is ever written to the account you copy <em>from</em>.</p>
+
+    <div class="api-row">
+      <select id="migSrcType" style="padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff">
+        <option value="urable">Copy from: Urable account</option>
+      </select>
+      <input type="password" id="migSrcKey" placeholder="SOURCE account API key (read-only use)" autocomplete="off">
+      <select id="migSrcEnv" style="padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff">
+        <option value="production">Production</option>
+        <option value="dev">Dev server</option>
+      </select>
+    </div>
+    <div class="api-row">
+      <span style="font-size:13px;color:var(--grey);min-width:150px">Copy into:</span>
+      <input type="password" id="migDstKey" placeholder="DESTINATION account API key" autocomplete="off">
+      <select id="migDstEnv" style="padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff">
+        <option value="production">Production</option>
+        <option value="dev">Dev server</option>
+      </select>
+    </div>
+
+    <div class="api-row">
+      <span style="font-size:13px;color:var(--grey);min-width:150px">Industry:</span>
+      <select id="migIndustry" style="padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff;flex:1;min-width:260px">
+        <option value="source">Keep each record's own industry (recommended)</option>
+        <option value="vehicleCare">Force everything to Vehicle Care</option>
+        <option value="lawnCare">Force everything to Lawn Care</option>
+        <option value="flatGlass">Force everything to Flat Glass</option>
+        <option value="other">Force everything to Other</option>
+      </select>
+    </div>
+
+    <div class="api-row" id="migCatRow">
+      <span style="font-size:13px;color:var(--grey);min-width:150px">Category names:</span>
+      <input type="file" id="migCatFile" accept=".csv,.xlsx,.xls" onchange="migLoadCatFile(this.files[0])"
+             style="flex:1;min-width:260px;font-size:12.5px;padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff">
+      <span id="migCatStatus" style="font-size:12.5px;color:var(--lt-grey)"></span>
+    </div>
+    <p class="api-note" style="margin-top:4px">Optional, and only needed if the preview says categories are unresolved: the API returns a product's category as an internal reference, not a name. Export Products/Services from the <em>source</em> account and drop it here &mdash; the copy reads the real category names from it.</p>
+
+    <div class="check-row"><input type="checkbox" id="migDoCust" checked><label for="migDoCust">Customers</label></div>
+    <div class="check-row"><input type="checkbox" id="migDoVeh" checked><label for="migDoVeh">Their vehicles / items</label></div>
+    <div class="check-row"><input type="checkbox" id="migDoProd" checked><label for="migDoProd">Products &amp; services (with their price points and categories)</label></div>
+
+    <div class="api-row" style="margin-top:16px">
+      <button class="btn secondary" id="migPreviewBtn" onclick="migPreview()">Preview &mdash; read only</button>
+      <button class="btn" id="migRunBtn" onclick="migStart()" disabled>Start copy</button>
+    </div>
+
+    <div class="progress-wrap" id="migProgressWrap">
+      <div class="progress-bar"><div class="progress-fill" id="migProgressFill"></div></div>
+      <div class="progress-text" id="migProgressText"></div>
+    </div>
+    <div class="import-log" id="migLog"></div>
+    <div class="summary-box" id="migSummary"></div>
+    <p class="api-note">The preview only reads. It reports exactly what would be created, what already matches, and any field that would not carry across &mdash; <strong>Start copy</strong> stays disabled until you have run it. Both keys stay in this browser tab.</p>
+  </div>
+
   <div class="card" id="statusCard" style="display:none;padding:16px 28px">
     <div class="detected" id="detected" style="margin-top:0">
       <span class="det-badge" id="detBadge"></span>
@@ -194,7 +256,7 @@ tbody tr:last-child td{border-bottom:none}
 
     <!-- CSV mode -->
     <div class="mode-panel active" id="panelCsv">
-      <p class="sub">Download the Urable-ready file and send it to your onboarding specialist, or upload it yourself if CSV import is enabled on your account.</p>
+      <p class="sub">Download the Urable-ready file, then upload it through the standard import in Analytics.</p>
       <div style="margin-top:14px">
         <button class="btn" onclick="downloadCSV()">&#8681; Download Urable-ready CSV</button>
         <button class="btn secondary" onclick="reset()" style="margin-left:10px">Start over</button>
@@ -226,10 +288,6 @@ tbody tr:last-child td{border-bottom:none}
         <input type="checkbox" id="tagOrigin" checked>
         <label for="tagOrigin">Tag each customer's origin as &ldquo;Imported from <span id="originName">previous system</span>&rdquo;</label>
       </div>
-      <div class="check-row" id="catalogRow" style="display:none">
-        <input type="checkbox" id="createCatalog">
-        <label for="createCatalog">Add each historical service to the account's Products &amp; Services catalog. Leave unchecked to bill all imported jobs against a single generic &ldquo;Imported historical service&rdquo; entry instead &mdash; keeps an existing catalog clean; the real service names are preserved in each job's notes.</label>
-      </div>
       <div style="margin-top:16px">
         <button class="btn" id="importBtn" onclick="startImport()">Start import</button>
       </div>
@@ -239,7 +297,7 @@ tbody tr:last-child td{border-bottom:none}
       </div>
       <div class="import-log" id="importLog"></div>
       <div class="summary-box" id="summaryBox"></div>
-      <p class="api-note">Your API key stays in this browser tab &mdash; it is only ever sent to <code>app.urable.com</code> and is never stored. Imports run at a safe pace well under Urable's rate limit.</p>
+      <p class="api-note">Build <span id="buildStamp"></span> &mdash; hard-refresh (Ctrl/Cmd&#8209;Shift&#8209;R) after replacing this file, or the browser keeps serving the old one.<br>Your API key stays in this browser tab &mdash; it is only ever sent to <code>app.urable.com</code> and is never stored. Imports run at a safe pace well under Urable's rate limit.</p>
     </div>
   </div>
 </main>
@@ -925,11 +983,73 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
+const BUILD='2026-09-01 07:30 UTC';
 const PRICE_DOLLAR=true;
+
+// A job line can carry its own amount, independent of the catalog entry's price
+// list — which is what history needs, since what was charged three years ago is
+// rarely today's price. The exact field name isn't documented; unknown fields
+// are ignored server-side, so we send the plausible spellings together and let
+// the API take the one it recognises. If none of these is right the amount falls
+// back to the referenced price variant — check a job's total after importing.
 function fmtPrice(n){ return (PRICE_DOLLAR?'$':'')+n.toFixed(2); }
+
+// A price book exported one-row-per-variant ("PPF Full Front - Coupe / 2-Door",
+// "- Sedan / Hatchback", "- Truck - Crew Cab" …) is already in the Urable
+// template's shape but not its intent: 472 rows that should be ~200 services
+// carrying labelled price points. Rather than hard-code anyone's size taxonomy,
+// learn it from the file — a trailing segment that recurs across several
+// different services is a variant label, not part of a name.
+function learnVariantSplitter(data){
+  const BODY=new Set(['truck','suv','van','car','coupe','sedan','wagon','hatchback','motorcycle']);
+  const last={};
+  for(const r of data){
+    const n=cl(r['Name']);
+    if(n.includes(' - ')){ const t=n.split(' - ').pop(); last[t]=(last[t]||0)+1; }
+  }
+  // 3+ reuses: enough to be a taxonomy, high enough that a service legitimately
+  // named "Widget - Deluxe" alongside one sibling isn't torn apart.
+  const vocab=new Set(Object.keys(last).filter(k=>last[k]>=3));
+  if(!vocab.size) return null;
+  return name=>{
+    const seg=cl(name).split(' - '); const lab=[];
+    if(seg.length>1&&vocab.has(seg[seg.length-1])){
+      lab.unshift(seg.pop());
+      // body-style grouping sits between the name and the class
+      // ("PPF Full Front - Truck - Crew Cab") and belongs with the label
+      if(seg.length>1&&BODY.has(seg[seg.length-1].trim().toLowerCase())) lab.unshift(seg.pop());
+    }
+    return {base:seg.join(' - '), label:lab.join(' - ')};
+  };
+}
+
+function groupTemplateVariants(rows){
+  // rows are already normalised template rows: [type,cat,name,desc,labels,prices,...]
+  const groups=new Map(), order=[];
+  for(const r of rows){
+    const key=(r[1]+'\u0000'+r[10]).toLowerCase();       // category + base name
+    if(!groups.has(key)){ groups.set(key,{r:r.slice(0,10),base:r[10],labels:[],prices:[]}); order.push(key); }
+    const g=groups.get(key);
+    g.labels.push(r[11]||'Standard');
+    g.prices.push(r[5]);
+  }
+  const out=[];
+  for(const key of order){
+    const g=groups.get(key);
+    const row=g.r;
+    if(g.prices.length>1){
+      row[2]=g.base;                                     // collapse to the base name
+      row[4]=g.labels.join('; ');
+      row[5]=g.prices.join('; ');
+    }
+    out.push(row.slice(0,10));
+  }
+  return out;
+}
 
 function convertUrableTemplateFlex(data){
   // Urable import template + older single-price variants (Price/Cost singular)
+  const splitter=learnVariantSplitter(data);
   let out=[];
   for(const r of data){
     const name=cl(r['Name']);
@@ -938,6 +1058,11 @@ function convertUrableTemplateFlex(data){
     const desc=cl(r['Description']).replace(/[\u2028\u2029]/g,' ').replace(/\s*\n\s*/g,' ');
     let labels=cl(r['Labels']||'');
     let prices=cl(r['Prices']||r['Price']||'');
+    // Some sheets use Labels as a comma-separated TAG list ("PPF, Package,
+    // Bumper Only, Regular") rather than price labels. Price labels are
+    // ';'-separated and pair 1:1 with prices; a comma list against a single
+    // price is tags, and importing it as a label produces nonsense.
+    if(labels&&!labels.includes(';')&&labels.includes(',')&&!prices.includes(';')) labels='';
     let costs=cl(r['Costs']||r['Cost']||'');
     // Some sheets jam export-style combined pricing into the single Price
     // cell: "2 Row Vehicle: $180.00, 3 Row Vehicle: $225.00" → split it
@@ -953,11 +1078,20 @@ function convertUrableTemplateFlex(data){
     prices=fmtSeg(prices); costs=fmtSeg(costs);
     // Quote-based services legitimately have no price → import as $0.00
     if(!prices) prices=fmtPrice(0);
-    out.push([type,cl(r['Category']),name,desc,labels,prices,costs,
+    const row=[type,cl(r['Category']),name,desc,labels,prices,costs,
       cl(r['Taxable']).toLowerCase()==='true'?'true':'false',
-      cl(r['Checklist']||''),cl(r['Quantities']||'')]);
+      cl(r['Checklist']||''),cl(r['Quantities']||'')];
+    if(splitter&&!labels.includes(';')){
+      const sp=splitter(name);
+      row[10]=sp.base; row[11]=sp.label;                 // scratch, trimmed later
+    } else { row[10]=name; row[11]=''; }
+    out.push(row);
   }
-  return out;
+  if(!splitter) return out.map(r=>r.slice(0,10));
+  const grouped=groupTemplateVariants(out);
+  // Only accept the grouping if it actually consolidated something; otherwise
+  // hand back the rows untouched so ordinary template files are unaffected.
+  return grouped.length<out.length?grouped:out.map(r=>r.slice(0,10));
 }
 
 function convertNameVariantPrice(data){
@@ -1195,14 +1329,28 @@ function convertGenericProductsSheet(data, cols){
 }
 
 // ─── Jobs import (Urable jobs export format) ────────────────────────────────
-// Detail Bookie shops price by vehicle size. Condense their long type names
-// into the short labels Urable expects on multi-price services.
-const SIZE_LABEL={'coupe 2 door':'Coupe','sedan 4 door':'Sedan','sedan 2 door':'Coupe',
-  'small suv':'Small SUV','large suv':'Large SUV','mini van':'Van','passenger van':'Van',
-  'cargo van':'Van','small pickup truck 2 door':'Small Truck','small pickup truck 4 door':'Small Truck',
-  'full sized pickup truck 2 door':'Full Size Truck','full sized pick up truck 4 door':'Full Size Truck',
-  'full sized pickup truck 4 door':'Full Size Truck','motorcycle':'Motorcycle','box truck':'Box Truck'};
-function sizeLabel(v){ const k=cl(v).toLowerCase(); return SIZE_LABEL[k]||cl(v); }
+// Detail Bookie shops price by vehicle size, and the size names in the source
+// ARE the shop's own convention — Rite-Way's live Urable catalog labels prices
+// "Coupe 2 Door", "Sedan 4 Door", "Full Sized Pick Up Truck 4 Door", verbatim
+// from Detail Bookie. Condensing them to "Coupe"/"Full Size Truck" would make
+// imported variants disagree with the entries the shop already maintains, so
+// pass the source value through and let the shop rename if they want to.
+// Detail Bookie's package builder appends " ad on" / " Add On" / " Copy" to
+// service names as shops duplicate and tweak entries, so history holds
+// "NHOU Salt Brine Eliminator Underbody Wash/Flush ad on" where the shop's
+// catalog says "NHOU Salt Brine Eliminator Underbody Wash/Flush". Stripping
+// those suffixes for MATCHING purposes recovers 711 line items on Rite-Way
+// without touching the names we create or display.
+function matchKey(s){
+  return cl(s).toLowerCase()
+    // earlier builds suffixed companion entries with "(imported)". Ignore it so
+    // a re-run against an account they touched reuses those entries.
+    .replace(/\s*\(\s*imported\s*\)\s*$/,'')
+    .replace(/\s*\b(ad\s*on|add[\s-]*on|copy)\b\s*$/,'')
+    .replace(/[^a-z0-9]+/g,' ').trim();
+}
+
+function sizeLabel(v){ return cl(v); }
 
 function moneyCents(v){
   const n=cleanPrice(v);
@@ -1345,6 +1493,23 @@ function convertDBTickets(data){
     if(!byJob.has(id)) byJob.set(id,[]);
     byJob.get(id).push(r);
   }
+  // Shops type the same service a dozen ways over three years — "Spring Clean",
+  // "spring clean", "SPRING CLEAN", "Spring clean". Left alone those become four
+  // separate catalog entries. Settle on the spelling the shop used most often
+  // and apply it everywhere; it's the same service and they'd want one row.
+  const spell={};
+  for(const r of data){
+    const n=cl(r['service_name']); if(!n) continue;
+    const k=n.toLowerCase().replace(/\s+/g,' ');
+    (spell[k]=spell[k]||{})[n]=(spell[k][n]||0)+1;
+  }
+  const canonical={};
+  for(const k in spell){
+    let best=null,bn=-1;
+    for(const v in spell[k]) if(spell[k][v]>bn){bn=spell[k][v];best=v;}
+    canonical[k]=best;
+  }
+  const canon=n=>canonical[cl(n).toLowerCase().replace(/\s+/g,' ')]||cl(n);
   const jobs=[]; let skippedAnon=0;
   for(const [id,rows] of byJob){
     const h=rows[0];
@@ -1353,7 +1518,7 @@ function convertDBTickets(data){
     if(first==='Anonymous'&&/noreply@/i.test(cl(h['email']))){ skippedAnon++; continue; }
     const names=[],cents=[],cats=[],sizes=[];
     for(const r of rows){
-      const nm=cl(r['service_name']); if(!nm) continue;
+      const nm=canon(r['service_name']); if(!nm) continue;
       const c=moneyCents(r['price']);
       names.push(nm); cents.push(c); cats.push(cl(r['service_category'])||'Imported');
       sizes.push(sizeLabel(r['vehicle_type']));
@@ -1680,7 +1845,6 @@ function setImportModeUI(){
   document.getElementById('tagOrigin').parentElement.style.display=isCust?'flex':'none';
   // Jobs can't go through the CSV path — hide that tab; show catalog choice
   document.getElementById('tabCsv').style.display=currentKind==='jobs'?'none':'';
-  document.getElementById('catalogRow').style.display=currentKind==='jobs'?'flex':'none';
 }
 
 // ─── Manual column mapper (fallback for any system) ─────────────────────────
@@ -1979,6 +2143,8 @@ function rowToProductPayload(row){
 // timed-out write is NOT retried — the server may have applied it, and a
 // duplicate job is worse than a reported failure. Re-running the file heals it.
 const API_TIMEOUT_MS=60000;
+let _jobWatchdog=null;   // run-level stall watchdog; declared here so it is
+                         // initialised long before importJobsRun can touch it
 async function apiFetch(path, opts, key, _attempt){
   const isRead=!opts.method||String(opts.method).toUpperCase()==='GET';
   const ac=new AbortController();
@@ -1998,7 +2164,10 @@ async function apiFetch(path, opts, key, _attempt){
   }
   clearTimeout(timer);
   if(res.status===429){
-    // Rate limited — wait for the window to reset, then retry once
+    // Rate limited — wait for the window to reset, then retry once.
+    // This wait is why a healthy run can look dead: 20s x 3 attempts, x4 workers,
+    // with nothing on screen. Announce it.
+    try{ logLine('Rate limited by the server — waiting 20s before retrying '+path+' (attempt '+((_attempt||0)+1)+' of 3). The run has not stopped.'); }catch(e){}
     await new Promise(r=>setTimeout(r,20000));
     if((_attempt||0)<3) return apiFetch(path,opts,key,(_attempt||0)+1);
     return { ok:false, status:429, body:{ error:'rate limited after 3 waits — re-run the file to finish' } };
@@ -2007,6 +2176,562 @@ async function apiFetch(path, opts, key, _attempt){
   try{ body=await res.json(); }catch(e){}
   return { ok:res.ok, status:res.status, body };
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Account-to-account copy (API → API)
+//
+// Extending this to a non-Urable system means writing ONE object with the three
+// methods below. Nothing else in this section knows where records come from:
+//
+//   { label, async customers(), async items(), async products() }
+//
+//     customers() -> [{ srcId, ...fields for POST /v1/customers }]
+//     items()     -> [{ srcId, srcCustomerId, ...fields for POST /v1/items }]
+//     products()  -> [{ srcId, ...fields for POST /v1/products }]
+//
+// Register it in MIGRATION_SOURCES and it appears in the dropdown. The
+// destination is always Urable.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const MIG_TIMEOUT_MS=60000;
+const migNormPhone=v=>{let d=String(v||'').replace(/\D/g,'');return d.length===11&&d[0]==='1'?d.slice(1):d;};
+const migNormNm=s=>String(s||'').trim().toLowerCase().replace(/\s+/g,' ');
+const migNormVeh=s=>String(s||'').trim().toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+// GET /v1/items returns the owner as a customerRef path; a POST body carries a
+// plain customerId. Read either, so matching can't silently miss and duplicate
+// every vehicle on a re-run.
+const migOwnerId=it=>String((it&&(it.customerRef||it.customerId))||'').split('/').pop();
+// Industry belongs to the record, not to the CSV panel's dropdown. A lawn-care
+// account copied with the vehicle-care default turns every property into a
+// vehicle-shaped item, which is how yards came across wrong.
+function migIndustryChoice(){
+  const el=document.getElementById('migIndustry');
+  const v=el&&el.value;
+  return (v==='source'||INDUSTRIES.includes(v))?v:'source';
+}
+function migIndustryFor(rec,fallback){
+  const c=migIndustryChoice();
+  if(c!=='source') return c;
+  const own=rec&&rec.industry;
+  return INDUSTRIES.includes(own)?own:fallback;
+}
+const migTally=(list,fn)=>{const m={};for(const x of list){const k=fn(x)||'(none)';m[k]=(m[k]||0)+1;}return m;};
+const migFmtTally=m=>Object.entries(m).sort((a,b)=>b[1]-a[1]).map(([k,n])=>k+' ×'+n.toLocaleString()).join(', ');
+
+// A foreign source only carries the fields we know how to translate. A same-system
+// source does NOT use this list — see `passthrough` below.
+const MIG_FIELDS={
+  customers:['firstName','lastName','companyName','type','status','origin','notes',
+             'emails','phoneNumbers','locations','tags','birthday','preferredContact'],
+  items:['name','type','industry','year','make','model','color','vin','licensePlate',
+         'notes','size','subType','mileage'],
+  products:['name','type','categoryName','description','taxable','prices','costs',
+            'barcode','commissionRate','jobType','virtualShop','duration','notes']
+};
+// Server-owned or structural — never sent to the destination, never reported as a
+// loss. `category`/`categoryRef` are the source account's own refs; the category
+// travels as categoryName instead. `industry` is NOT here: it belongs to the
+// record and must survive the copy.
+const MIG_SERVER_FIELDS=new Set(['id','createdAt','updatedAt','deletedAt','createdBy','updatedBy',
+  'customerRef','businessRef','ref','path','category','categoryRef','archived',
+  'quickbooksId','searchTerms','jobCount','lastJobAt','balance','totalSpent','_highlightResult',
+  'srcId','srcCustomerId']);
+
+function migBase(which){
+  const el=document.getElementById(which==='src'?'migSrcEnv':'migDstEnv');
+  return API_SERVERS[el?el.value:'production'];
+}
+function migLog(msg,cls){
+  const box=document.getElementById('migLog');
+  box.style.display='block';
+  const d=document.createElement('div');
+  if(cls) d.className=cls;
+  d.textContent=msg;
+  box.appendChild(d); box.scrollTop=box.scrollHeight;
+}
+function migProgress(done,total,label){
+  document.getElementById('migProgressWrap').style.display='block';
+  const pct=total?Math.round(done/total*100):0;
+  document.getElementById('migProgressFill').style.width=pct+'%';
+  document.getElementById('migProgressText').textContent=label+' · '+done.toLocaleString()+' / '+total.toLocaleString();
+}
+
+// The source key is used for reads and nothing else. This is enforced here, not
+// by convention: a non-GET against the source is a bug, and it would be a bug
+// that writes to a customer's live account.
+async function migFetch(base,path,opts,key,readOnly){
+  const method=String((opts&&opts.method)||'GET').toUpperCase();
+  if(readOnly&&method!=='GET') throw new Error('refusing '+method+' against the source account');
+  const ac=new AbortController();
+  const timer=setTimeout(()=>ac.abort(),MIG_TIMEOUT_MS);
+  let res;
+  try{
+    res=await fetch(base+path,{...(opts||{}),signal:ac.signal,
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+key,...((opts&&opts.headers)||{})}});
+  }catch(e){
+    clearTimeout(timer);
+    const timedOut=e&&e.name==='AbortError';
+    if(method==='GET'&&(opts&&opts._try||0)<2){
+      await new Promise(r=>setTimeout(r,2000));
+      return migFetch(base,path,{...opts,_try:((opts&&opts._try)||0)+1},key,readOnly);
+    }
+    return {ok:false,status:0,body:{error:timedOut?'timed out after 60s':'network error: '+((e&&e.message)||'unknown')}};
+  }
+  clearTimeout(timer);
+  if(res.status===429){
+    await new Promise(r=>setTimeout(r,20000));
+    if(((opts&&opts._try)||0)<3) return migFetch(base,path,{...opts,_try:((opts&&opts._try)||0)+1},key,readOnly);
+    return {ok:false,status:429,body:{error:'rate limited after 3 waits'}};
+  }
+  let body=null; try{ body=await res.json(); }catch(e){}
+  return {ok:res.ok,status:res.status,body};
+}
+
+async function migPageAll(base,key,path,onCount){
+  const out=[]; let startAfter=null,last=null;
+  for(let guard=0;guard<300;guard++){
+    const q='/v1/'+path+'?limit=100'+(startAfter?'&startAfter='+encodeURIComponent(startAfter):'');
+    const r=await migFetch(base,q,{},key,true);
+    if(!r.ok||!r.body||!r.body.success) throw new Error('reading '+path+': '+((r.body&&r.body.error)||('HTTP '+r.status)));
+    const data=r.body.data||[];
+    out.push(...data);
+    if(onCount) onCount(path,out.length);
+    if(data.length<100) break;
+    const next=data[data.length-1].id;
+    if(next===last) throw new Error('reading '+path+': pagination cursor stopped advancing at '+out.length);
+    last=next; startAfter=next;
+  }
+  return out;
+}
+
+// The API hands back a product's category as an internal reference
+// (categoryRef) with no name attached, and exposes no categories collection on
+// some accounts. The account's own Products/Services export DOES carry the
+// names, so it can stand in as the naming source. Keyed on product id first
+// (exact), then product name.
+let migCatNames=null;   // {byProductId, byName, byRefTail}
+function migLoadCatFile(file){
+  const st=document.getElementById('migCatStatus');
+  if(!file){ migCatNames=null; if(st) st.textContent=''; return; }
+  const done=rows=>{
+    const byProductId={},byName={};
+    let n=0;
+    for(const r of rows){
+      const cat=String(r.Category||r.category||r['Product Category']||'').trim();
+      if(!cat) continue;
+      const id=String(r.ID||r.Id||r.id||'').trim();
+      const nm=String(r.Name||r.name||'').trim();
+      if(id) byProductId[id]=cat;
+      if(nm) byName[matchKey(nm)]=cat;
+      n++;
+    }
+    migCatNames=n?{byProductId,byName,byRefTail:{}}:null;
+    if(st){ st.textContent=n?(n.toLocaleString()+' category names loaded'):'no Category column found';
+            st.style.color=n?'var(--mint-darker)':'#dc2626'; }
+  };
+  const ext=file.name.split('.').pop().toLowerCase();
+  const rd=new FileReader();
+  if(ext==='xlsx'||ext==='xls'){
+    rd.onload=e=>{ const wb=XLSX.read(e.target.result,{type:'array'});
+      done(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:''})); };
+    rd.readAsArrayBuffer(file);
+  }else{
+    rd.onload=e=>{ const text=new TextDecoder('utf-8').decode(e.target.result);
+      done(Papa.parse(text,{header:true,skipEmptyLines:true}).data); };
+    rd.readAsArrayBuffer(file);
+  }
+}
+
+// Probe an endpoint that may not exist. Null means "not available", which is
+// different from "empty" and must not be mistaken for it.
+async function migTryPage(base,key,path){
+  try{
+    const r=await migFetch(base,'/v1/'+path+'?limit=100',{},key,true);
+    if(!r.ok||!r.body||!r.body.success||!Array.isArray(r.body.data)) return null;
+    return r.body.data;
+  }catch(e){ return null; }
+}
+
+// Where a product's category actually lives differs by account and endpoint.
+// Guessing one shape is what put an entire lawn-care catalog into a single
+// bucket, twice. Resolve against every shape we've seen, say which one worked,
+// and if none does, STOP rather than inventing "Uncategorized" for everything.
+const migRefTail=p=>String(p.categoryRef||(p.category&&p.category.path)||'').trim().split('/').pop();
+function migResolveCategory(p,byId){
+  const direct=String(p.categoryName||'').trim();
+  if(direct) return {name:direct,via:'categoryName'};
+  const obj=p.category;
+  if(obj&&typeof obj==='object'&&obj.name) return {name:String(obj.name).trim(),via:'category.name'};
+  // some accounts carry a `categories` array of names or {name} objects
+  if(Array.isArray(p.categories)&&p.categories.length){
+    const first=p.categories[0];
+    const nm=typeof first==='string'?first:(first&&first.name);
+    if(nm&&String(nm).trim()&&!/^[A-Za-z0-9]{16,}$/.test(String(nm).trim()))
+      return {name:String(nm).trim(),via:'categories[]'};
+  }
+  if(typeof obj==='string'&&obj.trim()){
+    const hit=byId&&byId[obj.trim()];
+    return hit?{name:hit,via:'category id lookup'}:{name:obj.trim(),via:'category (string)'};
+  }
+  for(const k of ['categoryId','productCategoryId']){
+    const id=p[k]&&String(p[k]).trim();
+    if(id&&byId&&byId[id]) return {name:byId[id],via:k+' lookup'};
+  }
+  const tail=migRefTail(p);
+  if(tail&&byId&&byId[tail]) return {name:byId[tail],via:'categoryRef lookup'};
+  // the account's own export, keyed on product id then product name
+  if(migCatNames){
+    const byId2=migCatNames.byProductId[String(p.id||'').trim()];
+    if(byId2) return {name:byId2,via:'export file (product id)'};
+    const byNm=migCatNames.byName[matchKey(p.name||'')];
+    if(byNm) return {name:byNm,via:'export file (product name)'};
+    if(tail&&migCatNames.byRefTail[tail]) return {name:migCatNames.byRefTail[tail],via:'categoryRef learned from export'};
+  }
+  return {name:'',via:null};
+}
+
+// Aggregate the field names actually present on a set of records. When a shape
+// surprises us, this is what tells us how — instead of another round of guessing.
+function migShape(list,n){
+  const seen={};
+  for(const r of list) for(const k of Object.keys(r||{})) seen[k]=(seen[k]||0)+1;
+  return Object.entries(seen).sort((a,b)=>b[1]-a[1]).slice(0,n||40)
+    .map(([k,c])=>k+(c<list.length?'('+c+')':'')).join(', ');
+}
+
+// Split a source record into what we copy and what we'd be dropping.
+// passthrough: the source IS a Urable account, so its records are already in the
+// destination's shape. Carrying everything is both more faithful and safer than
+// an allowlist — a lawn-care property has fields no vehicle-shaped list would
+// name, and an allowlist would quietly drop them.
+function migPick(rec,allow,passthrough){
+  const keep={},dropped=[];
+  for(const k of Object.keys(rec||{})){
+    if(MIG_SERVER_FIELDS.has(k)) continue;
+    const v=rec[k];
+    if(v==null||v===''||(Array.isArray(v)&&!v.length)) continue;
+    if(passthrough||allow.includes(k)) keep[k]=v; else dropped.push(k);
+  }
+  return {keep,dropped};
+}
+
+function UrableSource(base,key,onCount){
+  // NOTE the spread comes FIRST in every map below. With `...p` last, a key the
+  // API returns as null (categoryName is one) overwrites the value computed
+  // above it — which is exactly how a whole catalog ended up in one "Imported"
+  // category instead of keeping its own.
+  return {
+    label:'Urable account',
+    passthrough:true,          // already in the destination's shape
+    async customers(){
+      return (await migPageAll(base,key,'customers',onCount)).map(c=>({...c, srcId:c.id}));
+    },
+    async items(){
+      return (await migPageAll(base,key,'items',onCount)).map(i=>({
+        ...i, srcId:i.id, srcCustomerId:migOwnerId(i)}));
+    },
+    async products(){
+      const raw=await migPageAll(base,key,'products',onCount);
+      // categories may be their own collection referenced by id
+      let byId=null; const probes=[];
+      for(const ep of ['categories','productCategories','product-categories','products/categories',
+                       'productCategory','serviceCategories']){
+        const res=await migTryPage(base,key,ep);
+        probes.push(ep+':'+(res===null?'n/a':res.length));
+        if(res&&res.length){ byId={}; for(const c of res) byId[c.id]=String(c.name||c.categoryName||'').trim(); break; }
+      }
+      const resolve=()=>{
+        const via={};
+        const out=raw.map(p=>{
+          const r=migResolveCategory(p,byId);
+          via[r.via||'UNRESOLVED']=(via[r.via||'UNRESOLVED']||0)+1;
+          return {...p, srcId:p.id, categoryName:r.name};
+        });
+        out._categoryVia=via;
+        return out;
+      };
+      let out=resolve();
+      // Second pass: every product we DID name teaches us what its categoryRef
+      // means, which then names the products the export didn't cover.
+      if(migCatNames&&out.some(p=>!p.categoryName)){
+        let learned=0;
+        for(let i=0;i<raw.length;i++){
+          const tail=migRefTail(raw[i]);
+          if(tail&&out[i].categoryName&&!migCatNames.byRefTail[tail]){ migCatNames.byRefTail[tail]=out[i].categoryName; learned++; }
+        }
+        if(learned) out=resolve();
+      }
+      out._categoriesEndpoint=byId?Object.keys(byId).length:0;
+      out._probes=probes.join(', ');
+      out._shape=migShape(raw);
+      out._refCount=new Set(raw.map(migRefTail).filter(Boolean)).size;
+      return out;
+    }
+  };
+}
+const MIGRATION_SOURCES={ urable:{ label:'Urable account', make:UrableSource } };
+
+let migPlan=null;   // result of the last preview; Start copy refuses to run without one
+
+async function migPreview(){ return migRun(true); }
+async function migStart(){
+  if(!migPlan){ alert('Run the preview first.'); return; }
+  return migRun(false);
+}
+
+async function migRun(dry){
+  const srcKey=document.getElementById('migSrcKey').value.trim();
+  const dstKey=document.getElementById('migDstKey').value.trim();
+  const doCust=document.getElementById('migDoCust').checked;
+  const doVeh=document.getElementById('migDoVeh').checked;
+  const doProd=document.getElementById('migDoProd').checked;
+  const sBase=migBase('src'), dBase=migBase('dst');
+
+  document.getElementById('migLog').innerHTML='';
+  document.getElementById('migSummary').style.display='none';
+  if(!srcKey||!dstKey){ alert('Both API keys are required.'); return; }
+  if(srcKey===dstKey&&sBase===dBase){
+    migLog('Source and destination are the same account — that would duplicate every record into itself. Stopped.',true&&'log-err'); return;
+  }
+  if(!doCust&&!doProd){ alert('Pick at least one thing to copy.'); return; }
+  if(doVeh&&!doCust){ migLog('Vehicles need their customers — tick Customers as well.','log-err'); return; }
+
+  const pBtn=document.getElementById('migPreviewBtn'), rBtn=document.getElementById('migRunBtn');
+  pBtn.disabled=true; rBtn.disabled=true;
+  const startedAt=Date.now();
+  try{
+    const src=MIGRATION_SOURCES[document.getElementById('migSrcType').value].make(sBase,srcKey,
+      (p,n)=>migProgress(0,1,'Reading source '+p+' · '+n.toLocaleString()));
+    migLog('Reading the source account…');
+
+    const [sCust,sItems,sProds]=await Promise.all([
+      doCust?src.customers():Promise.resolve([]),
+      (doCust&&doVeh)?src.items():Promise.resolve([]),
+      doProd?src.products():Promise.resolve([])
+    ]);
+    migLog('Source: '+sCust.length.toLocaleString()+' customers, '+sItems.length.toLocaleString()+' vehicles, '+sProds.length.toLocaleString()+' products/services.');
+
+    migLog('Reading the destination account…');
+    const [dCust,dItems,dProds]=await Promise.all([
+      doCust?migPageAll(dBase,dstKey,'customers'):Promise.resolve([]),
+      (doCust&&doVeh)?migPageAll(dBase,dstKey,'items'):Promise.resolve([]),
+      doProd?migPageAll(dBase,dstKey,'products'):Promise.resolve([])
+    ]);
+    migLog('Destination already holds '+dCust.length.toLocaleString()+' customers, '+dItems.length.toLocaleString()+' vehicles, '+dProds.length.toLocaleString()+' products/services.');
+
+    // ── match what the destination already has, on the same rules the file
+    // imports use: identifier + name for people, name for catalog entries.
+    const custIndex={};
+    for(const c of dCust){
+      const nm=migNormNm((c.firstName||'')+' '+(c.lastName||''));
+      for(const p of (c.phoneNumbers||[])) { const k=migNormPhone(p.value)+'|'+nm; if(!custIndex[k]) custIndex[k]=c.id; }
+      for(const e of (c.emails||[])) { const k=String(e.value||'').toLowerCase()+'|'+nm; if(!custIndex[k]) custIndex[k]=c.id; }
+      if(nm&&!custIndex['|'+nm]) custIndex['|'+nm]=c.id;
+    }
+    const custKeysOf=c=>{
+      const nm=migNormNm((c.firstName||'')+' '+(c.lastName||''));
+      const ks=[];
+      for(const p of (c.phoneNumbers||[])) ks.push(migNormPhone(p.value)+'|'+nm);
+      for(const e of (c.emails||[])) ks.push(String(e.value||'').toLowerCase()+'|'+nm);
+      ks.push('|'+nm);
+      return ks;
+    };
+    const prodIndex={};
+    for(const p of dProds){ const k=matchKey(p.name||''); if(k&&!prodIndex[k]) prodIndex[k]=p.id; }
+    const existingCats=new Set(dProds.map(p=>String(p.categoryName||(p.category&&p.category.name)||'').trim().toLowerCase()).filter(Boolean));
+
+    const idMap={};             // source customer id -> destination customer id
+    const custToCreate=[], custMatched=[];
+    for(const c of sCust){
+      const hit=custKeysOf(c).map(k=>custIndex[k]).find(Boolean);
+      if(hit){ idMap[c.srcId]=hit; custMatched.push(c); } else custToCreate.push(c);
+    }
+    const prodToCreate=[], prodMatched=[];
+    for(const p of sProds){
+      const k=matchKey(p.name||'');
+      if(k&&prodIndex[k]) prodMatched.push(p); else prodToCreate.push(p);
+    }
+    const catsToCreate=[...new Set(prodToCreate
+      .map(p=>(p.categoryName||'').trim()).filter(Boolean)
+      .filter(c=>!existingCats.has(c.toLowerCase())))];
+
+    // vehicles: only for customers that will exist, keyed within their owner
+    const itemIndex=new Set();
+    const dstIdToItems={};
+    for(const it of dItems){
+      const cid=migOwnerId(it);
+      (dstIdToItems[cid]=dstIdToItems[cid]||[]).push(migNormVeh(it.name));
+    }
+    const itemsToCreate=[]; let itemsMatched=0, itemsOrphan=0;
+    for(const it of sItems){
+      const dstCust=idMap[it.srcCustomerId];
+      if(!it.srcCustomerId){ itemsOrphan++; continue; }
+      if(dstCust&&(dstIdToItems[dstCust]||[]).includes(migNormVeh(it.name))){ itemsMatched++; continue; }
+      itemsToCreate.push(it);
+    }
+
+    // what would not carry across
+    const lost={};
+    const noteLost=(kind,dropped)=>{ for(const d of dropped){ const k=kind+'.'+d; lost[k]=(lost[k]||0)+1; } };
+    const pass=!!src.passthrough;
+    for(const c of custToCreate) noteLost('customer',migPick(c,MIG_FIELDS.customers,pass).dropped);
+    for(const i of itemsToCreate) noteLost('vehicle',migPick(i,MIG_FIELDS.items,pass).dropped);
+    for(const p of prodToCreate) noteLost('product',migPick(p,MIG_FIELDS.products,pass).dropped);
+
+    // Industry and categories are the two things a cross-account copy gets wrong
+    // quietly, so both are stated up front rather than discovered afterwards.
+    const srcInd=migTally([...sCust,...sItems,...sProds],r=>r.industry);
+    const dstInd=migTally([...dCust,...dItems,...dProds],r=>r.industry);
+    const dstMain=Object.entries(dstInd).filter(([k])=>INDUSTRIES.includes(k)).sort((a,b)=>b[1]-a[1])[0];
+    const fallbackInd=(dstMain&&dstMain[0])||'vehicleCare';
+    const srcCats=[...new Set(sProds.map(p=>(p.categoryName||'').trim()).filter(Boolean))];
+    const noCat=prodToCreate.filter(p=>!(p.categoryName||'').trim()).length;
+
+    // How the category was found, and what the source records actually look
+    // like. Both go in the log so a surprising shape is diagnosable from the
+    // preview instead of from a wrongly-populated destination account.
+    if(doProd&&sProds.length){
+      const via=sProds._categoryVia||{};
+      migLog('Category resolved via: '+(Object.keys(via).length?migFmtTally(via):'n/a')+
+        (sProds._categoriesEndpoint?' · categories endpoint returned '+sProds._categoriesEndpoint+' categor(ies)':' · no categories collection')+
+        (sProds._refCount?' · '+sProds._refCount+' distinct categoryRef(s) in the source':''));
+      if(via.UNRESOLVED){
+        migLog('Endpoint probes: '+(sProds._probes||''));
+        migLog('Source product fields seen: '+(sProds._shape||''),'log-err');
+      }
+    }
+    // Every product losing its category is not a copy — it is a flattening, and
+    // the shop has to undo it by hand. Stop instead.
+    const allUncategorised=doProd&&sProds.length>0&&srcCats.length===0;
+
+    const pricePts=prodToCreate.reduce((n,p)=>n+((p.prices||[]).length),0);
+
+    if(allUncategorised){
+      migLog('Stopped: none of the '+sProds.length.toLocaleString()+' source products resolves to a category name. Nothing was written.','log-err');
+      const sb=document.getElementById('migSummary');
+      sb.style.display='block';
+      sb.innerHTML='<strong style="color:#dc2626">Catalog copy stopped &mdash; nothing was written.</strong><br>'+
+        'The API returns each product\u2019s category as an internal reference ('+
+        (sProds._refCount||0)+' distinct one'+((sProds._refCount||0)===1?'':'s')+' here) and this account exposes no categories collection, so the names are not available over the API alone.'+
+        '<div style="margin-top:10px"><strong>The fix takes a minute:</strong> in the <em>source</em> account open Products/Services &rarr; <strong>Export</strong>, then drop that file into <em>Category names</em> above and preview again. The export carries the real category names and is matched on product id, so the copy reproduces the source\u2019s categories exactly.</div>'+
+        '<div style="margin-top:8px;font-size:12px;color:var(--lt-grey)">Flattening 92 services into one category would be worse than not copying them, which is why this stops instead.</div>';
+      pBtn.disabled=false; rBtn.disabled=true; migPlan=null;
+      return;
+    }
+
+    if(dry){
+      migPlan={sCust,sItems,sProds};
+      migLog('— preview only, nothing was written —','log-ok');
+      const rows=[];
+      if(doCust) rows.push('<strong>'+custToCreate.length.toLocaleString()+'</strong> customers created, '+custMatched.length.toLocaleString()+' already there');
+      if(doCust&&doVeh) rows.push('<strong>'+itemsToCreate.length.toLocaleString()+'</strong> vehicles created, '+itemsMatched.toLocaleString()+' already there'+(itemsOrphan?', '+itemsOrphan+' with no owner (skipped)':''));
+      if(doProd) rows.push('<strong>'+prodToCreate.length.toLocaleString()+'</strong> products/services created ('+pricePts.toLocaleString()+' price points, carried with their original SKUs), '+prodMatched.length.toLocaleString()+' matched by name');
+      if(doProd&&sProds.length) rows.push('Category source: '+escHtml(migFmtTally(sProds._categoryVia||{})));
+      if(doProd) rows.push('Categories are preserved exactly as the source has them &mdash; '+srcCats.length+' in the source'+
+        (catsToCreate.length?', '+catsToCreate.length+' of which the destination does not have yet: '+escHtml(catsToCreate.slice(0,8).join(', '))+(catsToCreate.length>8?' +'+(catsToCreate.length-8)+' more':''):', all already present'));
+      if(doProd&&noCat) rows.push('<span style="color:#b45309">'+noCat+' product(s) have no category in the source and will land in &ldquo;Uncategorized&rdquo;.</span>');
+      const choice=migIndustryChoice();
+      rows.push('Source industry: '+escHtml(migFmtTally(srcInd))+(Object.keys(dstInd).length?' &nbsp;·&nbsp; destination: '+escHtml(migFmtTally(dstInd)):''));
+      if(choice==='source'){
+        const sKeys=Object.keys(srcInd).filter(k=>INDUSTRIES.includes(k));
+        const mismatch=sKeys.filter(k=>k!==fallbackInd);
+        if(mismatch.length&&Object.keys(dstInd).length) rows.push('<span style="color:#b45309">These records keep their own industry ('+escHtml(mismatch.join(', '))+'), which differs from the destination\u2019s ('+escHtml(fallbackInd)+'). They will not show under the destination\u2019s industry unless you force one above.</span>');
+      } else rows.push('<span style="color:#b45309">Every record will be forced to <strong>'+escHtml(choice)+'</strong>, overriding what the source says.</span>');
+      const lostKeys=Object.keys(lost).sort();
+      const sb=document.getElementById('migSummary');
+      sb.style.display='block';
+      sb.innerHTML='<strong>Preview — nothing written.</strong><br>'+rows.join('<br>')+
+        (lostKeys.length?'<div style="margin-top:10px;color:#b45309"><strong>Would not carry across:</strong><br>'+
+          lostKeys.map(k=>escHtml(k)+' &times;'+lost[k]).join('<br>')+
+          '<br><span style="font-size:12px">These fields exist on the source records but this tool does not copy them yet.</span></div>':
+          '<div style="margin-top:10px;color:var(--mint-darker)">Every field on the source records is carried across.</div>');
+      rBtn.disabled=false; pBtn.disabled=false;
+      return;
+    }
+
+    // ── write ──────────────────────────────────────────────────────────────
+    let created={cust:0,veh:0,prod:0}, failed=0;
+    const total=custToCreate.length+itemsToCreate.length+prodToCreate.length;
+    let done=0;
+    const tick=l=>migProgress(++done,total,l);
+    const fail=(what,msg)=>{ failed++; migLog(what+': '+msg,'log-err'); };
+    async function pool(list,n,fn){ let i=0; const w=async()=>{while(i<list.length){await fn(list[i++]);}};
+      await Promise.all(Array.from({length:Math.min(n,list.length)},w)); }
+
+    if(custToCreate.length){
+      await pool(custToCreate,4,async c=>{
+        const {keep}=migPick(c,MIG_FIELDS.customers,pass);
+        if(!keep.firstName&&!keep.companyName) keep.firstName='Customer';
+        if(!keep.type) keep.type='person';
+        const r=await migFetch(dBase,'/v1/customers',{method:'POST',body:JSON.stringify(keep)},dstKey,false);
+        if(r.ok&&r.body&&r.body.success){ idMap[c.srcId]=r.body.data.id; created.cust++; }
+        else fail('customer '+((c.firstName||'')+' '+(c.lastName||'')).trim(),(r.body&&r.body.error)||('HTTP '+r.status));
+        tick('Copying customers');
+      });
+      migLog(created.cust.toLocaleString()+' customers created.','log-ok');
+    }
+
+    if(itemsToCreate.length){
+      await pool(itemsToCreate,4,async it=>{
+        const cid=idMap[it.srcCustomerId];
+        if(!cid){ fail('vehicle '+(it.name||''),'its customer was not created'); tick('Copying vehicles'); return; }
+        const {keep}=migPick(it,MIG_FIELDS.items,pass);
+        keep.customerId=cid;
+        keep.industry=migIndustryFor(it,fallbackInd);
+        if(!keep.name) keep.name='Item';
+        const r=await migFetch(dBase,'/v1/items',{method:'POST',body:JSON.stringify(keep)},dstKey,false);
+        if(r.ok&&r.body&&r.body.success) created.veh++;
+        else fail('vehicle '+(it.name||''),(r.body&&r.body.error)||('HTTP '+r.status));
+        tick('Copying vehicles');
+      });
+      migLog(created.veh.toLocaleString()+' vehicles created.','log-ok');
+    }
+
+    if(prodToCreate.length){
+      // Urable mints a category on first use and does not dedupe concurrent
+      // creates — four parallel POSTs naming one new category produce four
+      // categories. One product per new category goes first, serially.
+      const seen=new Set(), first=[], rest=[];
+      for(const p of prodToCreate){
+        const c=(p.categoryName||'Imported').trim().toLowerCase();
+        if(seen.has(c)) rest.push(p); else { seen.add(c); first.push(p); }
+      }
+      const make=async p=>{
+        const {keep}=migPick(p,MIG_FIELDS.products,pass);
+        if(!keep.name){ tick('Copying services'); return; }
+        keep.industry=migIndustryFor(p,fallbackInd);
+        if(!keep.type) keep.type='service';
+        // Never bucket a catalog into "Imported" — this is a clean copy, so the
+        // source's own categories are the whole point. Only a product with no
+        // category at all gets a home of our choosing.
+        if(!keep.categoryName) keep.categoryName='Uncategorized';
+        const r=await migFetch(dBase,'/v1/products',{method:'POST',body:JSON.stringify(keep)},dstKey,false);
+        if(r.ok&&r.body&&r.body.success) created.prod++;
+        else fail('product '+keep.name,(r.body&&r.body.error)||('HTTP '+r.status));
+        tick('Copying services');
+      };
+      await pool(first,1,make);
+      await pool(rest,4,make);
+      migLog(created.prod.toLocaleString()+' products/services created.','log-ok');
+    }
+
+    const secs=Math.round((Date.now()-startedAt)/1000);
+    const sb=document.getElementById('migSummary');
+    sb.style.display='block';
+    sb.innerHTML='<strong>Copy complete.</strong> '+
+      created.cust.toLocaleString()+' customers · '+created.veh.toLocaleString()+' vehicles · '+
+      created.prod.toLocaleString()+' products/services created in '+secs+'s.'+
+      (failed?' <span style="color:#dc2626">'+failed+' record(s) failed — re-run to finish them; anything already copied is matched and skipped.</span>':
+              ' Nothing failed. Re-running is safe: everything copied is matched and skipped.');
+    migPlan=null; rBtn.disabled=true;
+  }catch(e){
+    migLog('Stopped: '+((e&&e.message)||e),'log-err');
+  }finally{
+    document.getElementById('migPreviewBtn').disabled=false;
+  }
+}
+
 
 async function testConnection(){
   const key=document.getElementById('apiKey').value.trim();
@@ -2040,6 +2765,7 @@ function logLine(msg,isErr){
 // selectable by SKU) → vehicles → jobs. Historical paid/tip/tax amounts are
 // preserved in job notes until the API grows write paths for them.
 async function importJobsRun(key){
+  logLine('Import tool build '+BUILD);
   const btn=document.getElementById('importBtn');
   btn.disabled=true; btn.textContent='Importing…';
   document.getElementById('progressWrap').style.display='block';
@@ -2055,14 +2781,20 @@ async function importJobsRun(key){
   const uniqueCust={}, prodVariants={}, uniqueVeh={};
   // Catalog mode: named services per source system, or one generic entry so an
   // existing Products & Services list stays clean (names preserved in notes)
-  const catalogEl=document.getElementById('createCatalog');
-  const useCatalog=catalogEl?!!catalogEl.checked:true;
+  // One path, always: match what the account already carries, create the rest
+  // under their real names in an Imported category. There is no sensible
+  // alternative, and two toggles meant every failure came with the question of
+  // which mode it happened in.
+  const useCatalog=true, matchOnly=true;
+
   const GENERIC='Imported historical service';
   const VARIANTS_PER_PRODUCT=100; // stay well under any per-product limits
   const centsProdName={}; // cents -> generic product name (chunked)
   const prodCategory={};  // product name -> source category
   const skuFor={};        // product name -> Map(cents -> priceSku actually in use)
   const prodPriceSizes={}; // product name -> Map(cents -> Map(size -> count))
+  const bindable=new Set(); // "name|cents" pairs the account can actually price
+  const routeTo=new Map(); // "name|cents" -> the product that carries that amount
 
   // Turn observed (price, vehicle size) usage into Urable-style price labels.
   // A size is "owned" by the price it was charged most often; a price owned by
@@ -2128,8 +2860,15 @@ async function importJobsRun(key){
   // Any single product carrying more than VARIANTS_PER_PRODUCT price points gets
   // chunked. Rite-Way's card convenience fee alone has 340 distinct amounts —
   // one product with 340 prices is unusable in the UI and risks a server limit.
+  // A product is addressed internally by name, or by name+category when two
+  // entries share a name. NUL can't occur in a real name, so it can't collide.
+  const catKey=(nm,cat)=>nm+'\u0000'+String(cat||'').trim().toLowerCase();
+  const realName={};  // internal key -> the name to actually create it under
+  const nameOf=k=>realName[k]||k;
   const chunkOf={}; // base name -> Map(cents -> the product name actually used)
+  function applyChunking(){
   for(const pname of Object.keys(prodVariants)){
+    if(chunkOf[pname]) continue;
     const set=prodVariants[pname];
     if(set.size<=VARIANTS_PER_PRODUCT) continue;
     const all=[...set].sort((a,b)=>a-b);
@@ -2137,43 +2876,72 @@ async function importJobsRun(key){
     const m=new Map();
     for(let i=0;i<all.length;i+=VARIANTS_PER_PRODUCT){
       const part=all.slice(i,i+VARIANTS_PER_PRODUCT);
-      const nm=i===0?pname:(pname+' ('+(Math.floor(i/VARIANTS_PER_PRODUCT)+1)+')');
+      const n=Math.floor(i/VARIANTS_PER_PRODUCT)+1;
+      const nm=i===0?pname:(pname+' ('+n+')');
       prodVariants[nm]=new Set(part);
+      // a chunk of a companion entry must still be created under the real name
+      if(i>0&&realName[pname]) realName[nm]=realName[pname]+' ('+n+')';
       if(prodCategory[pname]) prodCategory[nm]=prodCategory[pname];
       if(prodPriceSizes[pname]) prodPriceSizes[nm]=prodPriceSizes[pname];
       for(const c of part) m.set(c,nm);
     }
     chunkOf[pname]=m;
   }
-  const custList=Object.entries(uniqueCust), prodList=Object.entries(prodVariants), vehList=Object.entries(uniqueVeh);
+  }
+  applyChunking();
+  const custList=Object.entries(uniqueCust), vehList=Object.entries(uniqueVeh);
+  let prodList=Object.entries(prodVariants);
   const payPlanned=jobsData.filter(j=>j.paid>0).length;
-  const totalOps=custList.length+prodList.length+vehList.length+jobsData.length+payPlanned;
+  let totalOps=custList.length+prodList.length+vehList.length+jobsData.length+payPlanned;
   let done=0, createdCust=0, createdProd=0, createdVeh=0, createdJobs=0, failedJobs=0;
   let reusedCust=0, reusedVeh=0, reusedProd=0, createdPayments=0, skippedJobs=0;
+  let priceDrift=0; // jobs whose returned total does not match the source
   const madeJobs=[]; // jobs created this run, for the payments phase
   let paymentsBlocked=false;
+  let paymentsAlready=0;  // historical payments already on the invoice
 
   // ── Phase 0: scan the account and MATCH existing records instead of
   // duplicating them. Critical when a customer list was imported first, or on
   // re-runs. Matching uses the same rule as dedupe: identifier + same name.
   document.getElementById('progressText').textContent='Scanning existing account data…';
+  // The scan reads the whole account, 100 records a page. On a populated
+  // account that's dozens of sequential round trips with nothing on screen —
+  // it reads as a hang. Report progress, and stop if the cursor stops moving.
+  const scanCounts={};
+  function scanStatus(){
+    const parts=Object.keys(scanCounts).map(k=>k+' '+scanCounts[k].toLocaleString());
+    ptext.textContent='Scanning existing account data · '+(parts.join(' · ')||'starting…');
+  }
   async function pageAll(path){
-    let out=[],startAfter='';
+    let out=[],startAfter='',lastCursor=null;
+    scanCounts[path]=0; scanStatus();
     for(let guard=0;guard<300;guard++){
       const r=await apiFetch('/v1/'+path+'?limit=100'+(startAfter?'&startAfter='+encodeURIComponent(startAfter):''),{method:'GET'},key);
-      const data=r.ok&&r.body&&r.body.data;
+      if(!r.ok){
+        logLine('Scan of '+path+' stopped after '+out.length.toLocaleString()+' record(s): '+((r.body&&r.body.error)||('HTTP '+r.status)),true);
+        break;
+      }
+      const data=r.body&&r.body.data;
       if(!data||!data.length) break;
       out=out.concat(data);
+      scanCounts[path]=out.length; scanStatus();
       if(data.length<100) break;
-      startAfter=data[data.length-1].id;
+      const next=data[data.length-1].id;
+      // a cursor that doesn't advance would spin until the guard trips
+      if(next===lastCursor){
+        logLine('Scan of '+path+' stopped: the pagination cursor stopped advancing at '+out.length.toLocaleString()+' record(s).',true);
+        break;
+      }
+      lastCursor=next; startAfter=next;
+      if(guard===299) logLine('Scan of '+path+' hit the 30,000-record page limit.',true);
     }
     return out;
   }
   const normPhone=v=>{let d=String(v||'').replace(/\D/g,'');return d.length===11&&d[0]==='1'?d.slice(1):d;};
   const normNm=s=>String(s||'').trim().toLowerCase().replace(/\s+/g,' ');
-  const exCust=await pageAll('customers');
-  const exItems=await pageAll('items');
-  const exProds=await pageAll('products');
+  const [exCust,exItems,exProds]=await Promise.all([
+    pageAll('customers'), pageAll('items'), pageAll('products')
+  ]);
   const exIndex={};
   for(const c of exCust){
     const nm=normNm((c.firstName||'')+' '+(c.lastName||''));
@@ -2215,13 +2983,121 @@ async function importJobsRun(key){
   }
   // existing products by exact name → reuse, and note which price SKUs exist
   const exProdSkus={}, exProdPrices={};
+  const prodAlias={}; // matchKey -> the catalog's own spelling
+  const existingCats=new Set(); // category names the account already uses
   for(const p of exProds){
     const nm=String(p.name||'');
     if(!prodMap[nm]) prodMap[nm]=p.id;
+    const mk=matchKey(nm);
+    // suffix-insensitive lookup. Prefer the shop's own spelling over an
+    // "(imported)" leftover when both collapse to the same key.
+    if(mk&&(!prodAlias[mk]||(/\(\s*imported\s*\)\s*$/i.test(prodAlias[mk])&&!/\(\s*imported\s*\)\s*$/i.test(nm)))) prodAlias[mk]=nm;
+    const pcat=String((p.categoryName||(p.category&&p.category.name)||'')).trim();
+    if(pcat) existingCats.add(pcat.toLowerCase());
     if(!exProdSkus[nm]){
       exProdSkus[nm]=new Set((p.prices||[]).map(x=>x.sku).filter(Boolean));
       exProdPrices[nm]=p.prices||[];
     }
+    // A companion entry carries the SAME name as the shop's own service and is
+    // told apart only by its category. Index it that way too, so a re-run finds
+    // the companion it created last time instead of the shop's live entry (and
+    // creates a second copy of it).
+    if(pcat){
+      const ck=catKey(nm,pcat);
+      if(!prodMap[ck]){
+        prodMap[ck]=p.id;
+        exProdSkus[ck]=new Set((p.prices||[]).map(x=>x.sku).filter(Boolean));
+        exProdPrices[ck]=p.prices||[];
+      }
+    }
+  }
+
+  // Match-only: a shop's real catalog is often a few dozen services while its
+  // history holds hundreds of one-off write-ins ("Tint", "Spring Clean",
+  // "Rental Car"). Creating a product for each buries the working catalog. Bind
+  // to what the account already carries; send the rest to the shared imported
+  // bucket, which keeps the exact historical amounts (job totals still
+  // reconcile) and preserves the real names in each job's notes.
+  if(matchOnly){
+    let moved=0, movedPrices=0;
+    for(const pname of Object.keys(prodVariants)){
+      const set=prodVariants[pname];
+      const alias=prodAlias[matchKey(pname)];
+      const resolved=prodMap[pname]?pname:(alias||pname);
+      const existing=prodMap[resolved];
+      if(existing&&resolved!==pname){ prodMap[pname]=existing; exProdPrices[pname]=exProdPrices[resolved]; }
+      if(!existing){
+        // The account doesn't carry this service. Create it under its REAL name
+        // in the Imported category — the whole point of the history is that the
+        // shop can see what was quoted and completed for each customer, and a
+        // generic bucket entry destroys exactly that.
+        prodCategory[pname]='Imported';
+        for(const c of set) routeTo.set(pname+'|'+c,pname);
+        moved++;
+        continue;
+      }
+      // The account carries the service. Bind every historical amount to it
+      // where the exact price still exists; the rest go to a companion entry.
+      // Either way the shop's own entry is never modified.
+      // Take the shop's OWN price SKUs. skuFor is normally filled by the
+      // products phase, but a matched service never goes through it — without
+      // this the payload falls back to our imp<cents> naming and the API
+      // rejects it: "priceSku 'imp24900' not found for product/service".
+      const mine=valueMap(pname);
+      skuFor[pname]=mine;
+      const need=new Set();
+      for(const c of set){
+        if(mine.has(c)) bindable.add(pname+'|'+c); else need.add(c);
+      }
+      reusedProd++;
+      if(need.size){
+        // The account carries the service but no longer prices it at this
+        // historical amount. Sending the line without a priceSku does NOT
+        // set the amount — Urable silently falls back to the product's
+        // DEFAULT price point. On dev that turned a $100 line into $80 and
+        // a $60 line into $0 with no error and no failed job. So park the
+        // missing amounts on a companion entry that carries the exact figure.
+        //
+        // The companion takes the SAME name as the shop's own service; the
+        // Imported category is what tells them apart. That way, once the shop
+        // deletes that category, the job lines read as the plain service name
+        // instead of carrying an "(imported)" tag forever — line items keep
+        // their name and amount when the product goes (verified on dev).
+        const shadow=catKey(pname,'Imported');
+        realName[shadow]=pname;
+        prodCategory[shadow]='Imported';
+        prodVariants[shadow]=need;
+        for(const c of need) routeTo.set(pname+'|'+c,shadow);
+        movedPrices+=need.size;
+      }
+      delete prodVariants[pname];   // the shop's own entry is never modified
+    }
+    if(moved||movedPrices){
+      // the bucket will exceed the per-product variant ceiling; chunk it
+      const all=[...(prodVariants[GENERIC]||new Set())].sort((a,b)=>a-b);
+      delete prodVariants[GENERIC];
+      for(let i=0;i<all.length;i+=VARIANTS_PER_PRODUCT){
+        const part=all.slice(i,i+VARIANTS_PER_PRODUCT);
+        const nm=i===0?GENERIC:(GENERIC+' ('+(Math.floor(i/VARIANTS_PER_PRODUCT)+1)+')');
+        prodVariants[nm]=new Set(part);
+        for(const c of part) centsProdName[c]=nm;
+      }
+      applyChunking();
+      prodList=Object.entries(prodVariants);
+      totalOps=custList.length+prodList.length+vehList.length+jobsData.length+payPlanned;
+      logLine('Match-only: '+moved.toLocaleString()+' service(s) the account does not carry will be created under their real names in the Imported category. '+movedPrices.toLocaleString()+' historical amount(s) are no longer in the catalog and will be carried on a companion entry in the Imported category so the job totals stay exact. No changes to existing services.');
+    }
+  }
+
+  {
+    const withPrices=Object.keys(exProdPrices).filter(k=>(exProdPrices[k]||[]).length).length;
+    const tot=Object.keys(exProdPrices).length;
+    let nPrices=0,nSkus=0;
+    for(const k of Object.keys(exProdPrices)) for(const p of (exProdPrices[k]||[])){ if(p&&p.value!=null){ nPrices++; if(p.sku!=null&&p.sku!=='') nSkus++; } }
+    if(nPrices) logLine('Existing price points: '+nPrices.toLocaleString()+', of which '+nSkus.toLocaleString()+' carry a sku.'+
+      (nSkus===0?' None are referenceable, so every matched line will be priced directly on the job.':''));
+    if(tot) logLine('Scanned '+tot.toLocaleString()+' existing service(s); '+withPrices.toLocaleString()+' returned price data.'+
+      (withPrices===0?' The products endpoint returned no prices, so nothing can be matched on amount — every service will get a companion entry. Flag this to the dev team.':''));
   }
 
   // existing jobs → skip ones already imported, so a re-run only fills gaps.
@@ -2246,7 +3122,17 @@ async function importJobsRun(key){
       if(!exJobByNum[m[1]]) exJobByNum[m[1]]=rec;
     } else if(!exJobByKey[k]) exJobByKey[k]=rec; // pre-existing, non-imported job
   }
-  function tick(phase){ done++; fill.style.width=Math.round(done/totalOps*100)+'%';
+  // A stalled run and a merely slow one look identical from outside. The 60s
+  // per-request timeout doesn't cover a rate-limit backoff, which is silent for
+  // up to a minute per record. This says which one you're looking at.
+  let _lastDone=-1,_stallSince=Date.now(),_phase='starting';
+  clearInterval(_jobWatchdog);
+  _jobWatchdog=setInterval(()=>{
+    if(done!==_lastDone){ _lastDone=done; _stallSince=Date.now(); return; }
+    const secs=Math.round((Date.now()-_stallSince)/1000);
+    if(secs>=30) logLine('Still running — nothing has completed in '+secs+'s (phase: '+_phase+', '+done.toLocaleString()+'/'+totalOps.toLocaleString()+'). Not frozen; a rate-limit backoff or a slow write can hold this for a minute at a time.',true);
+  },15000);
+  function tick(phase){ done++; _phase=phase||_phase; fill.style.width=Math.round(done/totalOps*100)+'%';
     ptext.textContent=phase+' · '+done.toLocaleString()+' / '+totalOps.toLocaleString()+' operations'; }
 
   async function pool(list, n, fn){
@@ -2280,16 +3166,45 @@ async function importJobsRun(key){
   });
 
   // 2) products — reuse when the existing entry already has every price we need.
-  // Otherwise create a separate "<name> (imported)" companion rather than
-  // editing the shop's real catalog entry: appending our variants to a
-  // customer's live service rewrites their pricing (and fails outright when
-  // their existing price has no label, which the API requires once there's
-  // more than one). Historical data must never mutate a working catalog.
+  // Otherwise create a companion entry in the Imported category, keyed by
+  // name+category, rather than editing the shop's real catalog entry:
+  // appending our variants to a customer's live service rewrites their pricing
+  // (and fails outright when their existing price has no label, which the API
+  // requires once there's more than one). Historical data must never mutate a
+  // working catalog.
   // valueMap: what price SKUs an existing catalog entry already offers, keyed by
   // amount. A service the shop already prices at $495 is reused at ITS sku —
   // we no longer demand our own imp<cents> sku and clone the entry when it's
-  // absent, which is what produced duplicate "(imported)" companions.
-  const valueMap=nm=>{ const m=new Map(); for(const p of (exProdPrices[nm]||[])) if(p&&p.sku!=null&&p.value!=null&&!m.has(p.value)) m.set(p.value,p.sku); return m; };
+  // absent, which is what produced duplicate companion entries.
+  // A stored price may come back as cents (189900) or as dollars (1899 / 1899.00)
+  // depending on the endpoint. Index BOTH readings so a $1,899.00 catalog price
+  // matches a 189900-cent history line either way — getting this wrong makes
+  // every service look like it's missing its price and spawns a companion for
+  // all of them.
+  function priceCents(v){
+    if(v==null) return null;
+    const n=Number(v);
+    if(!isFinite(n)) return null;
+    return Number.isInteger(n)?n:Math.round(n*100);
+  }
+  function valueMap(nm){
+    const m=new Map();
+    for(const p of (exProdPrices[nm]||[])){
+      if(!p||p.value==null) continue;
+      // Only a REAL sku can be referenced. Prices the shop created in the app
+      // may carry none, and fabricating 'imp<cents>' produced exactly the
+      // failure we kept seeing: "priceSku 'imp24900' not found". No sku means
+      // this amount can't be referenced — leave it out so the caller prices
+      // the line directly instead.
+      const sku=(p.sku!=null&&p.sku!=='')?p.sku:null;
+      if(sku==null) continue;
+      const a=priceCents(p.value);            // as given
+      const b=Math.round(Number(p.value)*100); // as dollars
+      if(a!=null&&!m.has(a)) m.set(a,sku);
+      if(isFinite(b)&&!m.has(b)) m.set(b,sku);
+    }
+    return m;
+  }
   // Urable mints a category on first use. Four concurrent POSTs naming the same
   // new category produce duplicate categories (seen on dev: "Exterior Package"
   // twice). Create one product per distinct category serially first, so the
@@ -2301,27 +3216,34 @@ async function importJobsRun(key){
   }
   const makeProduct=async ([name,centsSet])=>{
     const centsList=[...centsSet].sort((a,b)=>a-b);
-    const labels=priceLabelsFor(name,centsList);
+    const postName=nameOf(name);
+    const labels=priceLabelsFor(postName,centsList);
     const wanted=centsList.map(c=>({sku:'imp'+c,label:(labels&&labels.get(c))||('Imported $'+(c/100).toFixed(2)),value:c}));
-    const category=prodCategory[name]||'Imported';
+    // The source system's category names ("Exterior Service Add-On", "Full
+    // Package") are not this shop's vocabulary, and minting them scatters
+    // imported history across categories nobody created. Use the source
+    // category only when the account already has one by that name; otherwise
+    // everything lands in a single Imported category.
+    const srcCat=prodCategory[name]||'';
+    const category=(srcCat&&existingCats.has(srcCat.toLowerCase()))?srcCat:'Imported';
     if(prodMap[name]&&exProdSkus[name]){
       const have=valueMap(name);
       const missing=wanted.filter(w=>!exProdSkus[name].has(w.sku)&&!have.has(w.value));
       if(!missing.length){ skuFor[name]=have; reusedProd++; tick('Matching services'); return; }
-      const compName=name+' (imported)';
-      if(prodMap[compName]&&exProdSkus[compName]){
-        const have2=valueMap(compName);
-        const missing2=wanted.filter(w=>!exProdSkus[compName].has(w.sku)&&!have2.has(w.value));
-        if(!missing2.length){ prodMap[name]=prodMap[compName]; skuFor[name]=have2; reusedProd++; tick('Matching services'); return; }
+      const compKey=catKey(postName,'Imported');
+      if(compKey!==name&&prodMap[compKey]&&exProdSkus[compKey]){
+        const have2=valueMap(compKey);
+        const missing2=wanted.filter(w=>!exProdSkus[compKey].has(w.sku)&&!have2.has(w.value));
+        if(!missing2.length){ prodMap[name]=prodMap[compKey]; skuFor[name]=have2; reusedProd++; tick('Matching services'); return; }
       }
-      const cr=await apiFetch('/v1/products',{method:'POST',body:JSON.stringify({type:'service',name:compName,industry:selectedIndustry(),categoryName:category,taxable:false,prices:wanted})},key);
+      const cr=await apiFetch('/v1/products',{method:'POST',body:JSON.stringify({type:'service',name:postName,industry:selectedIndustry(),categoryName:'Imported',taxable:false,prices:wanted})},key);
       if(cr.ok&&cr.body&&cr.body.success){ prodMap[name]=cr.body.data.id; skuFor[name]=new Map(wanted.map(w=>[w.value,w.sku])); createdProd++; }
-      else err('product '+compName,(cr.body&&cr.body.error)||('HTTP '+cr.status));
+      else err('product '+postName,(cr.body&&cr.body.error)||('HTTP '+cr.status));
       tick('Creating services'); return;
     }
-    const r=await apiFetch('/v1/products',{method:'POST',body:JSON.stringify({type:'service',name:name,industry:selectedIndustry(),categoryName:category,taxable:false,prices:wanted})},key);
+    const r=await apiFetch('/v1/products',{method:'POST',body:JSON.stringify({type:'service',name:postName,industry:selectedIndustry(),categoryName:category,taxable:false,prices:wanted})},key);
     if(r.ok&&r.body&&r.body.success){ prodMap[name]=r.body.data.id; skuFor[name]=new Map(wanted.map(w=>[w.value,w.sku])); createdProd++; }
-    else err('product '+name,(r.body&&r.body.error)||('HTTP '+r.status));
+    else err('product '+postName,(r.body&&r.body.error)||('HTTP '+r.status));
     tick('Creating services');
   };
   await pool(firstOfCat, 1, makeProduct);  // serial: one per category
@@ -2356,7 +3278,10 @@ async function importJobsRun(key){
     if(already){
       skippedJobs++;
       // self-heal: the job exists but its historical payment never landed
-      if(j.paid>0&&!already.paid) madeJobs.push({jid:already.id,custId:custId,j:j});
+      if(j.paid>0){
+        if(!already.paid) madeJobs.push({jid:already.id,custId:custId,j:j});
+        else paymentsAlready++;   // already on the invoice — nothing to do, and
+      }                            // that is a finished state, not a failure
       tick('Matching jobs'); return;
     }
     let itemIds=j.vehicles.map(v=>itemMap[ck+'|'+normVeh(v)]||findVehicle(ck,v)).filter(Boolean);
@@ -2372,13 +3297,21 @@ async function importJobsRun(key){
     if(!itemIds.length){ failedJobs++; err('job #'+j.num,'no vehicle/item available'); tick('Creating jobs'); return; }
     const lineItems=j.lineItems.map((li,i)=>{
       const cents=j.lineCents?j.lineCents[i]:(i===0?(j.firstLineCents??j.perLineCents):j.perLineCents);
-      const base=useCatalog?li:centsProdName[cents];
+      const itemId=itemIds[j.lineItems.length===itemIds.length?i:0]||itemIds[0];
+      const key=li+'|'+cents;
+      const binds=useCatalog&&(!matchOnly||bindable.has(key))&&prodMap[li];
+      // match-only routes each (service, amount) to whichever entry carries it:
+      // the shop's own where the price still exists, otherwise the Imported one
+      const base=binds?li:(matchOnly?(routeTo.get(key)||li):(useCatalog?li:centsProdName[cents]));
       const pname=(chunkOf[base]&&chunkOf[base].get(cents))||base;
-      const sku=(skuFor[pname]&&skuFor[pname].get(cents))||('imp'+cents);
-      const e={productServiceId:prodMap[pname],priceSku:sku};
-      e.itemId=itemIds[j.lineItems.length===itemIds.length?i:0]||itemIds[0];
+      const e={productServiceId:prodMap[pname], itemId:itemId};
+      // Every line references a real price SKU. There is no line-level amount
+      // override in the API today: value/price/amount/unitPrice are ignored
+      // and the product's default price point is used instead, which is wrong
+      // money reported as success. A missing sku here fails loudly instead.
+      e.priceSku=(skuFor[pname]&&skuFor[pname].get(cents))||('imp'+cents);
       return e;
-    }).filter(e=>e.productServiceId);
+    }).filter(e=>e.productServiceId||e.name);
     if(!lineItems.length){ failedJobs++; err('job #'+j.num,'no line items/services available'); tick('Creating jobs'); return; }
     // Generic mode: keep the real service names on the job record
     let jobNotes=j.notes;
@@ -2411,6 +3344,20 @@ async function importJobsRun(key){
     const r=await apiFetch('/v1/jobs',{method:'POST',body:JSON.stringify(payload)},key);
     if(r.ok&&r.body&&r.body.success){
       createdJobs++;
+      // Money check. A line that references no usable price SKU is not an
+      // error to the API — it quietly bills the product's default price
+      // point, so a job can come back "success" for the wrong amount. Compare
+      // what came back against the source before anyone trusts the totals.
+      try{
+        const want=(j.lineCents||[]).reduce((a,b)=>a+(Number(b)||0),0);
+        const d=r.body.data||{};
+        const gotRaw=[d.subtotal,d.subTotal,d.total,d.amount].find(v=>v!=null);
+        const got=gotRaw==null?null:Number(gotRaw);
+        if(want&&got!=null&&isFinite(got)&&Math.abs(got-want)>1){
+          priceDrift++;
+          if(priceDrift<=25) err('job #'+j.num,'line total came back $'+(got/100).toFixed(2)+' but the source says $'+(want/100).toFixed(2));
+        }
+      }catch(_){}
       const rec={id:r.body.data.id,paid:0}; // guard against in-file repeats
       // number when we have one, signature only as a last resort — two estimates
       // for one customer at one price with no date share a signature but are
@@ -2423,7 +3370,15 @@ async function importJobsRun(key){
   });
 
   // 5) historical payments — POST /v1/payments with imported:true so the
-  // invoices show as paid and revenue reports bucket in the original period
+  // invoices show as paid and revenue reports bucket in the original period.
+  //
+  // totalOps was budgeted before the run assuming every paid job would need a
+  // payment written. On a re-run most already have one, so the bar would stop
+  // short and read as a freeze. Re-budget now that the real number is known.
+  totalOps=done+madeJobs.length;
+  if(paymentsAlready) logLine(paymentsAlready.toLocaleString()+' historical payment(s) are already recorded on their invoices — nothing to do for those.');
+  if(madeJobs.length) logLine('Recording '+madeJobs.length.toLocaleString()+' historical payment(s).');
+  else logLine('No historical payments left to record.','log-ok');
   await pool(madeJobs, 4, async ({jid,custId,j})=>{
     if(paymentsBlocked){ tick('Recording payments'); return; }
     const r=await apiFetch('/v1/payments',{method:'POST',body:JSON.stringify({
@@ -2452,10 +3407,16 @@ async function importJobsRun(key){
     createdCust.toLocaleString()+' customers created, '+reusedCust.toLocaleString()+' matched to existing · '+
     createdVeh.toLocaleString()+' vehicles created, '+reusedVeh.toLocaleString()+' matched · '+
     createdProd.toLocaleString()+' services created, '+reusedProd.toLocaleString()+' reused · '+
-    createdPayments.toLocaleString()+' historical payments recorded'+
+    (createdPayments||!paymentsAlready
+       ? createdPayments.toLocaleString()+' historical payments recorded'+(paymentsAlready?' ('+paymentsAlready.toLocaleString()+' already recorded)':'')
+       : 'no new payments needed \u2014 all '+paymentsAlready.toLocaleString()+' were already recorded')+
     (failedJobs?', <span style="color:#dc2626">'+failedJobs+' jobs failed</span>.':'.')+
+    (priceDrift?' <span style="color:#dc2626"><strong>'+priceDrift.toLocaleString()+' job(s) came back at a total that does not match the source</strong> — do not trust these figures; see the log.</span>':' Every job total matched the source.')+
     ' Historical payments, tips, and tax are preserved in each job\'s notes.'+
     (gs?'<div style="margin-top:8px;font-size:12.5px"><strong>Failure breakdown:</strong><br>'+gs+'</div>':'');
+  clearInterval(_jobWatchdog);
+  fill.style.width='100%';
+  ptext.textContent='Finished · '+done.toLocaleString()+' / '+totalOps.toLocaleString()+' operations';
   btn.disabled=false; btn.textContent='Start import';
   importing=false;
 }
@@ -2469,7 +3430,15 @@ async function startImport(){
     if(!jobsData.length){ alert('No jobs to import.'); return; }
     if(!confirm('Import '+jobsData.length.toLocaleString()+' jobs (plus their customers, vehicles, and services) into your Urable account?')) return;
     importing=true;
-    return importJobsRun(key);
+    return importJobsRun(key).catch(e=>{
+      clearInterval(_jobWatchdog);   // must not outlive the run
+      // Without this an exception rejects a floating promise: the button stays
+      // "Importing…" and the progress line freezes on its last message, which
+      // reads as a hang rather than a bug.
+      logLine('Import stopped: '+((e&&e.message)||e),true);
+      const b=document.getElementById('importBtn');
+      if(b){ b.disabled=false; b.textContent='Start import'; }
+    });
   }
   if(!convertedRows.length){ alert('No converted records to import.'); return; }
   const noun=currentKind==='products'?'services':'customers';
@@ -2498,12 +3467,92 @@ async function startImport(){
   // Modest concurrency: 4 at a time keeps us far under the 2,500/min limit
   const CONCURRENCY=4;
   let idx=0;
+  let matchedExisting=0;
 
-  async function worker(){
-    while(idx<total){
+  // ── Re-running must be safe ────────────────────────────────────────────
+  // The jobs import has always scanned the account first and skipped records
+  // it had already created. The customer and product imports did not — they
+  // POSTed every row every time, so a second run after a partial failure
+  // silently duplicated the whole file. Scan here for the same reason.
+  const nrm=v=>String(v||'').trim().toLowerCase().replace(/\s+/g,' ');
+  const digits=v=>{const d=String(v||'').replace(/\D/g,'');return d.length===11&&d[0]==='1'?d.slice(1):d;};
+  const seenIdx={};
+  async function scanExisting(){
+    let out=[],startAfter='';
+    const path=isProd?'products':'customers';
+    for(let guard=0;guard<300;guard++){
+      const r=await apiFetch('/v1/'+path+'?limit=100'+(startAfter?'&startAfter='+encodeURIComponent(startAfter):''),{method:'GET'},key);
+      const data=r.ok&&r.body&&r.body.data;
+      if(!data||!data.length) break;
+      out=out.concat(data);
+      if(data.length<100) break;
+      startAfter=data[data.length-1].id;
+    }
+    for(const rec of out){
+      if(isProd){
+        // a service is the same service if the name matches, ignoring the
+        // package-builder suffixes shops accumulate
+        const k=matchKey(rec.name||'');
+        if(k) seenIdx['p|'+k]=rec.id;
+      } else {
+        // same rule the jobs import uses: an identifier alone is not enough,
+        // because households share a phone — the name has to agree too
+        const nm=nrm((rec.firstName||'')+' '+(rec.lastName||''));
+        for(const p of (rec.phoneNumbers||[])){ const d=digits(p.value); if(d) seenIdx[d+'|'+nm]=rec.id; }
+        for(const e of (rec.emails||[])){ const v=nrm(e.value); if(v) seenIdx[v+'|'+nm]=rec.id; }
+        if(nm) seenIdx['|'+nm]=rec.id;
+      }
+    }
+    if(out.length) logLine('Found '+out.length.toLocaleString()+' existing '+(isProd?'service':'customer')+'(s) in the account — matching rows will be skipped, not duplicated.');
+  }
+  function alreadyThere(row){
+    if(isProd) return !!seenIdx['p|'+matchKey(row[2]||'')];
+    const nm=nrm((row[0]||'')+' '+(row[1]||''));
+    if(!nm) return false;
+    // HEADERS: 0 First, 1 Last … 9 Phone Number, 10 Email
+    const ph=digits(row[9]||'');
+    const em=nrm(row[10]||'');
+    return !!(seenIdx[ph+'|'+nm]||seenIdx[em+'|'+nm]||seenIdx['|'+nm]);
+  }
+  await scanExisting();
+
+  // Urable mints a category the first time a product names it, and it does not
+  // deduplicate concurrent creates — four parallel POSTs naming the same new
+  // category produce four categories. (Seen on a real import: "Motorcycle &
+  // Powersports" three times, "Paint Protection" twice.) Reorder so the first
+  // product of each distinct category comes first, and create that leading
+  // block one at a time; every later product then names a category that
+  // already exists.
+  // Urable mints a category the first time a product names it, and concurrent
+  // creates are not deduplicated. Ordering the first product of each category
+  // ahead of the rest wasn't enough — the parallel pass would hit the same
+  // category again before the server had made it visible, and mint a second.
+  // The invariant that actually holds: only ever one product of a given
+  // category in flight. Group by category, run each group sequentially, and
+  // run the groups in parallel.
+  let catChains=null;
+  if(isProd){
+    const by=new Map();
+    for(const row of convertedRows){
+      const cat=(row[1]||'Imported').trim().toLowerCase();
+      if(!by.has(cat)) by.set(cat,[]);
+      by.get(cat).push(row);
+    }
+    catChains=[...by.values()];
+  }
+
+  async function worker(cap){
+    const limit=cap||total;
+    while(idx<limit){
       const i=idx++;
-      const row=convertedRows[i];
+      await handleRow(convertedRows[i]);
+    }
+  }
+
+  async function handleRow(row){
+    {
       const label=isProd?(row[2]||'(unnamed service)'):(((row[0]||'')+' '+(row[1]||'')).trim()||'(no name)');
+      if(alreadyThere(row)){ matchedExisting++; return; }
       try{
         const payload=isProd?rowToProductPayload(row):rowToCustomerPayload(row, origin);
         const r=await apiFetch(isProd?'/v1/products':'/v1/customers',{method:'POST',body:JSON.stringify(payload)},key);
@@ -2530,18 +3579,31 @@ async function startImport(){
         addError(label, e.message);
         if(failed===1&&created===0){
           logLine('Network error — the API may not allow browser requests (CORS). Stopping. Use CSV download mode instead and flag CORS for the dev team.',true);
-          idx=total; // stop all workers
+          idx=total; if(catChains) catChains.length=0; // stop every worker/chain
         }
       }
-      const done=created+failed;
+      const done=created+failed+matchedExisting;
       document.getElementById('progressFill').style.width=Math.round(done/total*100)+'%';
       document.getElementById('progressText').textContent=
         done.toLocaleString()+' / '+total.toLocaleString()+' processed · '+
-        created.toLocaleString()+' created'+(vehiclesCreated?' · '+vehiclesCreated+' vehicles':'')+
+        created.toLocaleString()+' created'+(matchedExisting?' · '+matchedExisting+' already there':'')+
+        (vehiclesCreated?' · '+vehiclesCreated+' vehicles':'')+
         (failed?' · '+failed+' failed':'');
     }
   }
-  await Promise.all(Array.from({length:CONCURRENCY},worker));
+  if(catChains){
+    // one chain per category, CONCURRENCY chains at a time
+    let ci=0;
+    const runChain=async()=>{
+      while(ci<catChains.length){
+        const chain=catChains[ci++];
+        for(const row of chain) await handleRow(row);
+      }
+    };
+    await Promise.all(Array.from({length:Math.min(CONCURRENCY,catChains.length)},runChain));
+  } else {
+    await Promise.all(Array.from({length:CONCURRENCY},()=>worker()));
+  }
 
   // Group errors by cause so patterns jump out
   const grouped={};
@@ -2553,6 +3615,7 @@ async function startImport(){
   sb.style.display='block';
   sb.innerHTML='<strong>Import complete.</strong> '+created.toLocaleString()+' '+noun+' created'+
     (vehiclesCreated?', '+vehiclesCreated.toLocaleString()+' vehicles added':'')+
+    (matchedExisting?' · '+matchedExisting.toLocaleString()+' already in the account (skipped)':'')+
     (failed?', <span style="color:#dc2626">'+failed+' failed</span>.':'.')+
     ' Open your Urable account to verify.'+
     (failed?'<div style="margin-top:8px;font-size:12.5px"><strong>Failure breakdown:</strong><br>'+groupSummary+'</div>':'');
@@ -2590,6 +3653,10 @@ for(const [id,kind] of [['dropZone','customers'],['dropZoneP','products'],['drop
     if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0],kind);
   });
 }
+
+document.addEventListener('DOMContentLoaded',()=>{
+  const el=document.getElementById('buildStamp'); if(el) el.textContent=BUILD;
+});
 </script>
 </body>
 </html>
