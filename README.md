@@ -106,11 +106,43 @@ source-write guard from `index.html` and watching the harness fail. If the
 section is renamed or moved, the harness stops with a message instead of
 silently passing — update the markers near the top of the file.
 
+## Import run log
+
+Every direct API import opens a run: `IMP-YYYYMMDD-HHMM-<initials>`. The operator
+types their name before the run starts (self-declared, not authenticated — there
+is no login on a static page, but it puts a name on the batch).
+
+Two things come out of it:
+
+- **A tag on the records.** The run id goes into the notes of every customer,
+  vehicle and job created, so a bad batch can be found and removed in the app
+  without disturbing anything else in the account.
+- **A receipt.** A CSV listing every record created with its Urable id, offered
+  at the end of the run. This is the only precise record of a run — keep it.
+  Payments in particular have no DELETE endpoint, so the receipt is the only way
+  to know exactly what a run put in.
+
+## Jobs imports and workflows
+
+The jobs panel carries a warning, because this bites hard: a bulk jobs import
+creates hundreds of jobs at once, and any workflow or scheduled message watching
+for new or completed jobs fires on every one — real messages to the shop's real
+customers. Turn workflows and automated scheduled messages **off** before a jobs
+run and back on after, and consider a Completed → payment-request workflow to
+sweep up imported jobs that still owe money.
+
+## Prospect-facing export request
+
+`exports/index.html` — the page CS sends to a shop that's switching, explaining
+which three exports to pull and where to find them.
+Live at https://urable-import-tool.vercel.app/exports/
+
 ## Repo contents
 - `index.html` — the tool
 - `README.md` — this file
 - `walkthrough/` — the CS walkthrough, its images, step script, and `capture.js`
 - `migration-harness.test.js` — offline test for the account-to-account copy
+- `exports/` — the shareable "what to send us" page for prospective customers
 
 See `claude/START_HERE_Import_Tool.md` in the Urable project for the full
 history, open threads, and the Kyle list.

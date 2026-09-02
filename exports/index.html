@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bringing your data into Urable</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --mint:#2FD2A8; --mint-dark:#1D9E75; --mint-deep:#0F6E56;
+    --engine:#222428; --grey:#5f6368; --lt:#9aa0a6;
+    --line:#e6e8eb; --bg:#f4f5f8; --card:#fff; --wash:#eafcf6;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Roboto','Helvetica Neue',-apple-system,sans-serif;color:var(--engine);background:var(--bg);line-height:1.6}
+  .wrap{max-width:860px;margin:0 auto;padding:0 24px}
+
+  header{background:var(--engine);color:#fff;padding:44px 0 40px}
+  header .eyebrow{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--mint);font-weight:700;margin-bottom:12px}
+  header h1{font-size:34px;line-height:1.25;font-weight:500;letter-spacing:-.3px;max-width:19ch}
+  header p{margin-top:14px;color:#c8ccd1;font-size:15.5px;max-width:60ch}
+
+  main{padding:40px 0 8px}
+  .lead{font-size:16px;color:var(--grey);max-width:66ch}
+  h2{font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--lt);font-weight:700;margin:44px 0 16px}
+
+  .files{display:grid;grid-template-columns:1fr;gap:14px}
+  .file{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--mint);border-radius:10px;padding:20px 22px}
+  .file .top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .file h3{font-size:17px;font-weight:500}
+  .tag{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:3px 9px;border-radius:99px;background:var(--wash);color:var(--mint-deep)}
+  .tag.opt{background:#f4f5f8;color:var(--grey)}
+  .file p{font-size:14px;color:var(--grey);margin-top:7px}
+  .file .cols{margin-top:11px;font-size:13px;color:var(--engine);background:var(--bg);border-radius:7px;padding:10px 13px}
+  .file .cols b{color:var(--mint-deep)}
+
+  ol.steps{list-style:none;counter-reset:s;margin-top:4px}
+  ol.steps li{counter-increment:s;position:relative;padding:0 0 22px 46px}
+  ol.steps li::before{content:counter(s);position:absolute;left:0;top:-2px;width:30px;height:30px;border-radius:50%;
+    background:var(--mint);color:#fff;font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center}
+  ol.steps li::after{content:"";position:absolute;left:14.5px;top:32px;bottom:0;width:1px;background:var(--line)}
+  ol.steps li:last-child{padding-bottom:0}
+  ol.steps li:last-child::after{display:none}
+  ol.steps h3{font-size:16px;font-weight:500}
+  ol.steps p{font-size:14px;color:var(--grey);margin-top:3px}
+
+  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:14px}
+  th{text-align:left;background:var(--bg);color:var(--grey);font-weight:500;font-size:12px;letter-spacing:.05em;text-transform:uppercase;padding:10px 14px}
+  td{padding:11px 14px;border-top:1px solid var(--line)}
+  td:first-child{font-weight:500;white-space:nowrap}
+
+  .note{background:var(--wash);border:1px solid #b9ecd9;border-radius:10px;padding:18px 22px;margin-top:16px;font-size:14.5px}
+  .note strong{color:var(--mint-deep)}
+  .faq{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:6px 22px;margin-top:14px}
+  .faq details{border-bottom:1px solid var(--line)}
+  .faq details:last-child{border-bottom:none}
+  .faq summary{cursor:pointer;padding:15px 0;font-weight:500;font-size:15px;list-style:none;display:flex;justify-content:space-between;gap:14px}
+  .faq summary::-webkit-details-marker{display:none}
+  .faq summary::after{content:"+";color:var(--mint-dark);font-size:20px;line-height:1}
+  .faq details[open] summary::after{content:"\2013"}
+  .faq p{font-size:14px;color:var(--grey);padding:0 0 15px}
+
+  footer{margin-top:52px;padding:26px 0 44px;border-top:1px solid var(--line);font-size:13px;color:var(--lt)}
+  @media(min-width:720px){ .files{grid-template-columns:1fr 1fr} .file:first-child{grid-column:1 / -1} }
+  @media print{ header{background:#fff;color:var(--engine)} header p{color:var(--grey)} .faq details{open:true} }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="eyebrow">Switching to Urable</div>
+    <h1>Bring your customers, pricing and job history with you</h1>
+    <p>You've spent years building up your customer list and your service menu. None of it has to be retyped. Send us three exports and we'll load them into your Urable account for you.</p>
+  </div>
+</header>
+
+<main class="wrap">
+  <p class="lead">Most shops send everything in one go, but you don't have to. Customers alone is enough to get started, and the rest can follow.</p>
+
+  <h2>What to send</h2>
+  <div class="files">
+    <div class="file">
+      <div class="top"><h3>Your customer list</h3><span class="tag">Start here</span></div>
+      <p>Names, phone numbers, emails, addresses and their vehicles. This is the one that matters most &mdash; it's what lets you start booking on day one.</p>
+      <div class="cols">Useful columns: <b>name · phone · email · address · vehicle</b> &mdash; whatever your system exports is fine.</div>
+    </div>
+    <div class="file">
+      <div class="top"><h3>Products &amp; services</h3><span class="tag opt">Recommended</span></div>
+      <p>Your service menu and pricing, including tiered prices like Coupe / Sedan / SUV. Saves rebuilding the whole price book by hand.</p>
+      <div class="cols">Useful columns: <b>service · description · price</b></div>
+    </div>
+    <div class="file">
+      <div class="top"><h3>Job history</h3><span class="tag opt">Optional</span></div>
+      <p>Past jobs with dates, vehicles, services and amounts, so your customer records show what you've already done for them.</p>
+      <div class="cols">Useful columns: <b>date · customer · vehicle · services · total · paid</b></div>
+    </div>
+  </div>
+
+  <div class="note">
+    <strong>Don't worry about the format.</strong> CSV or Excel, one file or several, tidy or messy &mdash; we handle it. We already read exports from Jobber, Shopmonkey, Housecall Pro, Square, Fieldd, TintWiz, Mobile Tech RX, GoHighLevel, HubSpot, Detail Bookie, QuickBooks and more. If we haven't seen your system before, send it anyway; adding a new one usually takes us a day.
+  </div>
+
+  <h2>How to get your exports</h2>
+  <table>
+    <tr><th>System</th><th>Where to look</th></tr>
+    <tr><td>Jobber</td><td>Reports or Clients &rarr; Export</td></tr>
+    <tr><td>Shopmonkey</td><td>Reports &rarr; Customers &rarr; Export</td></tr>
+    <tr><td>Housecall Pro</td><td>Customer list &rarr; Export, and Price Book &rarr; Export</td></tr>
+    <tr><td>Square</td><td>Customers &rarr; Directory &rarr; Export, and Items &rarr; Export library</td></tr>
+    <tr><td>Mobile Tech RX</td><td>Clients &rarr; Export client list</td></tr>
+    <tr><td>QuickBooks</td><td>Customers &rarr; Export to Excel</td></tr>
+    <tr><td>Anything else</td><td>Look for Export, Download, or Reports. Ask their support for "a CSV of my customers" &mdash; every system has one.</td></tr>
+  </table>
+  <p class="lead" style="margin-top:14px;font-size:14px">Locked out of your old system, or they won't give you an export? Tell us &mdash; we've worked around it before.</p>
+
+  <h2>What happens next</h2>
+  <ol class="steps">
+    <li><h3>Send us the files</h3><p>Email them to your onboarding contact. Nothing needs cleaning up first.</p></li>
+    <li><h3>We convert and check them</h3><p>We match the format, merge duplicates, and tie vehicles to the right owners. You get a preview of what will land before anything is written.</p></li>
+    <li><h3>You approve, we import</h3><p>Once you're happy with the preview, it goes into your account &mdash; usually the same day.</p></li>
+    <li><h3>You check it over</h3><p>We'll walk the account with you. Everything imported is tagged, so anything that isn't right can be pulled back out without touching the rest.</p></li>
+  </ol>
+
+  <h2>Common questions</h2>
+  <div class="faq">
+    <details><summary>Do I have to stop using my current system?</summary>
+      <p>No. An export is just a copy &mdash; your current system carries on exactly as before. Most shops run both for a week or two during the switch.</p></details>
+    <details><summary>My data is a mess. Is that a problem?</summary>
+      <p>It's normal, and no. Names and vehicles in one column, addresses in a notes field, duplicates from years of entry &mdash; we sort all of that out. A messy export is still far better than starting from scratch.</p></details>
+    <details><summary>What about duplicates?</summary>
+      <p>Handled. We merge records that are clearly the same person and leave the ones that only look alike &mdash; two family members sharing a home phone stay as two customers.</p></details>
+    <details><summary>Is my customer data safe?</summary>
+      <p>Yes. Files are used for your import and nothing else, and your data is never shared. If you'd rather send a file with pricing or notes stripped out, that's fine too.</p></details>
+    <details><summary>How long does it take?</summary>
+      <p>Customers are usually same-day. A full history migration with thousands of jobs takes a little longer, and we'll tell you up front.</p></details>
+    <details><summary>What if something looks wrong afterwards?</summary>
+      <p>Tell us. Every imported record is tagged with the batch it came from, so a bad import can be found and removed on its own without disturbing anything else in your account.</p></details>
+  </div>
+</main>
+
+<footer class="wrap">Questions about any of this? Ask your Urable onboarding contact &mdash; we'd rather answer than have you guess.</footer>
+
+</body>
+</html>
