@@ -55,6 +55,12 @@ tbody tr:last-child td{border-bottom:none}
 .btn.secondary{background:#fff;border:1px solid var(--line);color:var(--grey);font-weight:400;box-shadow:none}
 .btn.secondary:hover{background:var(--bg)}
 #results,#mapperCard{display:none}
+.warn-box{margin-top:14px;background:#fff8e6;border:1px solid #f5d48a;border-left:4px solid #d99100;
+  border-radius:8px;padding:14px 18px;font-size:13px;line-height:1.65;color:#5c4300}
+.warn-box strong{display:block;margin-bottom:6px;color:#8a5a00}
+.warn-box ol{margin:0;padding-left:20px}
+.warn-box li{margin-bottom:5px}
+.warn-box li:last-child{margin-bottom:0}
 @keyframes justLanded{0%{box-shadow:0 0 0 0 rgba(47,210,168,.55)}100%{box-shadow:0 0 0 14px rgba(47,210,168,0)}}
 .just-landed{animation:justLanded 1.2s ease-out}
 @media (prefers-reduced-motion:reduce){.just-landed{animation:none}}
@@ -222,6 +228,20 @@ tbody tr:last-child td{border-bottom:none}
           <option value="other">Other</option>
         </select>
         <button class="btn secondary" onclick="testConnection()" id="testBtn">Test connection</button>
+      </div>
+      <div class="api-row" style="margin-top:10px">
+        <input type="text" id="operator" placeholder="Your name (recorded on every record this run)" autocomplete="off"
+               style="max-width:420px">
+        <span id="runIdHint" class="api-note" style="margin:0;align-self:center"></span>
+      </div>
+      <div id="jobsWarning" class="warn-box" style="display:none">
+        <strong>Before you start a jobs import</strong>
+        <ol>
+          <li><strong>Turn off automated scheduled messages</strong> and <strong>deactivate workflows</strong> in the account. A bulk import creates hundreds of jobs at once, and any workflow watching for new or completed jobs will fire on every one of them &mdash; real messages to the shop&rsquo;s real customers.</li>
+          <li>Run the import.</li>
+          <li>Consider a workflow on <strong>Completed &rarr; send payment request</strong> to sweep up imported jobs that still owe money, since they bypassed the normal flow.</li>
+          <li>Turn scheduled messages and workflows back on.</li>
+        </ol>
       </div>
       <div class="check-row">
         <input type="checkbox" id="createVehicles" checked>
@@ -1842,7 +1862,79 @@ function processRaw(raw, filename){
   setImportModeUI();
 }
 
+// ─── Import run log ─────────────────────────────────────────────────────────
+// A static page has nowhere to keep a server-side audit trail, so the log has to
+// live in the two places it is actually useful: stamped ON the records inside
+// Urable (so a bad run can be filtered and deleted without touching anything
+// else), and in a receipt file the operator keeps.
+//
+// The receipt carries the id of every record created, which is what makes a
+// surgical clean-up possible — payments especially, since they have no DELETE.
+let IMPORT_RUN=null;
+
+function startRun(kind){
+  const who=(document.getElementById('operator')||{}).value||'';
+  const d=new Date();
+  const p=n=>String(n).padStart(2,'0');
+  const initials=who.trim().split(/\s+/).map(w=>w[0]||'').join('').toUpperCase().slice(0,3)||'??';
+  IMPORT_RUN={
+    runId:'IMP-'+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+'-'+initials,
+    operator:who.trim()||'(not given)',
+    kind, startedAt:d.toISOString(),
+    server:(document.getElementById('apiEnv')||{}).value||'production',
+    sourceFile:currentFilename||'', sourcePlatform:sourcePlatformName||'',
+    records:[]
+  };
+  const hint=document.getElementById('runIdHint');
+  if(hint) hint.textContent='Run '+IMPORT_RUN.runId;
+  return IMPORT_RUN;
+}
+function recordCreated(type,id,label){
+  if(IMPORT_RUN&&id) IMPORT_RUN.records.push({type,id,label:label||'',at:new Date().toISOString()});
+}
+// Stamped into a record's notes so it can be found in the app, not just in the
+// receipt. Short on purpose — it shares the field with real content.
+function runTag(){ return IMPORT_RUN?('[' + IMPORT_RUN.runId + ']'):''; }
+function withRunTag(notes){
+  const t=runTag(); if(!t) return notes||'';
+  return notes?(notes+' | '+t):t;
+}
+function runReceiptCSV(){
+  if(!IMPORT_RUN) return '';
+  const R=IMPORT_RUN;
+  const esc=v=>{const x=String(v==null?'':v);return /[",\n]/.test(x)?'"'+x.replace(/"/g,'""')+'"':x;};
+  const head=['Run ID','Operator','Import type','Started','Server','Source file','Source format',
+              'Record type','Record ID','Label','Created at'];
+  const rows=R.records.map(r=>[R.runId,R.operator,R.kind,R.startedAt,R.server,R.sourceFile,R.sourcePlatform,
+                               r.type,r.id,r.label,r.at]);
+  if(!rows.length) rows.push([R.runId,R.operator,R.kind,R.startedAt,R.server,R.sourceFile,R.sourcePlatform,
+                              '(nothing created)','','','']);
+  return [head].concat(rows).map(r=>r.map(esc).join(',')).join('\r\n');
+}
+function downloadReceipt(){
+  if(!IMPORT_RUN) return;
+  const blob=new Blob([runReceiptCSV()],{type:'text/csv'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=IMPORT_RUN.runId+'-receipt.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+function receiptButtonHtml(){
+  if(!IMPORT_RUN) return '';
+  const n=IMPORT_RUN.records.length;
+  return '<div style="margin-top:12px">'+
+    '<button class="btn secondary" onclick="downloadReceipt()">&#8681; Download run receipt ('+n.toLocaleString()+' records)</button>'+
+    '<div style="margin-top:6px;font-size:12px;color:var(--grey)">Run <strong>'+IMPORT_RUN.runId+'</strong> &middot; '+
+    escHtml(IMPORT_RUN.operator)+'. Every record created carries this run id in its notes, so this batch can be found and removed on its own. Keep the receipt &mdash; it lists each record&rsquo;s id, and payments cannot be deleted through the API.</div></div>';
+}
+
 function setImportModeUI(){
+  // The workflow warning is a jobs-only problem: a bulk jobs import is what
+  // triggers hundreds of automated messages to a shop's real customers.
+  const jw=document.getElementById('jobsWarning');
+  if(jw) jw.style.display=(currentKind==='jobs')?'block':'none';
+
   // Vehicle/origin options only make sense for customer imports
   const isCust=currentKind==='customers';
   document.getElementById('createVehicles').parentElement.style.display=isCust?'flex':'none';
@@ -3181,8 +3273,9 @@ async function importJobsRun(key){
         payload.locations=[{label:'Main',value:{address:addr}}];
       }
     }
+    payload.notes=withRunTag(payload.notes);
     const r=await apiFetch('/v1/customers',{method:'POST',body:JSON.stringify(payload)},key);
-    if(r.ok&&r.body&&r.body.success){ custMap[ck]=r.body.data.id; createdCust++; }
+    if(r.ok&&r.body&&r.body.success){ custMap[ck]=r.body.data.id; createdCust++; recordCreated('customer',r.body.data.id,payload.firstName+' '+(payload.lastName||'')); }
     else err('customer '+c.name,(r.body&&r.body.error)||('HTTP '+r.status));
     tick('Creating customers');
   });
@@ -3264,7 +3357,7 @@ async function importJobsRun(key){
       tick('Creating services'); return;
     }
     const r=await apiFetch('/v1/products',{method:'POST',body:JSON.stringify({type:'service',name:postName,industry:selectedIndustry(),categoryName:category,taxable:false,prices:wanted})},key);
-    if(r.ok&&r.body&&r.body.success){ prodMap[name]=r.body.data.id; skuFor[name]=new Map(wanted.map(w=>[w.value,w.sku])); createdProd++; }
+    if(r.ok&&r.body&&r.body.success){ prodMap[name]=r.body.data.id; skuFor[name]=new Map(wanted.map(w=>[w.value,w.sku])); createdProd++; recordCreated('service',r.body.data.id,postName); }
     else err('product '+postName,(r.body&&r.body.error)||('HTTP '+r.status));
     tick('Creating services');
   };
@@ -3280,8 +3373,9 @@ async function importJobsRun(key){
     const payload={customerId:custId,name:v.name,type:v.itype||'automotive',industry:selectedIndustry()};
     if(v.vin) payload.vins=[v.vin];
     if(v.plate) payload.licensePlates=[v.plate];
+    payload.notes=withRunTag(payload.notes);
     const r=await apiFetch('/v1/items',{method:'POST',body:JSON.stringify(payload)},key);
-    if(r.ok&&r.body&&r.body.success){ itemMap[vk]=r.body.data.id; createdVeh++; }
+    if(r.ok&&r.body&&r.body.success){ itemMap[vk]=r.body.data.id; createdVeh++; recordCreated('vehicle',r.body.data.id,payload.name||''); }
     else err('vehicle '+v.name,(r.body&&r.body.error)||('HTTP '+r.status));
     tick('Creating vehicles');
   });
@@ -3363,9 +3457,11 @@ async function importJobsRun(key){
     }
     if(j.adjustments.length) payload.adjustments=j.adjustments.map(a=>({type:'discount',name:a.name,value:a.cents}));
     if(jobNotes) payload.notes=jobNotes;
+    payload.notes=withRunTag(payload.notes);
     const r=await apiFetch('/v1/jobs',{method:'POST',body:JSON.stringify(payload)},key);
     if(r.ok&&r.body&&r.body.success){
       createdJobs++;
+      recordCreated('job',(r.body.data&&r.body.data.id)||'', 'Job '+(j.jobNo||'')+' · '+(j.customerName||''));
       // Money check. A line that references no usable price SKU is not an
       // error to the API — it quietly bills the product's default price
       // point, so a job can come back "success" for the wrong amount. Compare
@@ -3408,7 +3504,7 @@ async function importJobsRun(key){
       paymentMethod:'other', status:'paid',
       paidAt:j.completedAt||j.end||j.start||Date.now(),
       name:'Imported payment', imported:true})},key);
-    if(r.ok&&r.body&&r.body.success) createdPayments++;
+    if(r.ok&&r.body&&r.body.success){ createdPayments++; recordCreated('payment',(r.body.data&&r.body.data.id)||'',''); }
     else{
       const msg=(r.body&&r.body.error)||('HTTP '+r.status);
       if(r.status===403&&/scope/i.test(msg)){
@@ -3424,6 +3520,7 @@ async function importJobsRun(key){
   const gs=Object.entries(grouped).sort((a,b)=>b[1]-a[1]).map(([m,c])=>'&ldquo;'+escHtml(m)+'&rdquo; &times;'+c).join('<br>');
   const sb=document.getElementById('summaryBox');
   sb.style.display='block';
+  const _receipt=receiptButtonHtml();
   sb.innerHTML='<strong>Jobs import complete.</strong> '+createdJobs.toLocaleString()+' jobs created'+
     (skippedJobs?', '+skippedJobs.toLocaleString()+' already imported (skipped)':'')+' · '+
     createdCust.toLocaleString()+' customers created, '+reusedCust.toLocaleString()+' matched to existing · '+
@@ -3435,7 +3532,7 @@ async function importJobsRun(key){
     (failedJobs?', <span style="color:#dc2626">'+failedJobs+' jobs failed</span>.':'.')+
     (priceDrift?' <span style="color:#dc2626"><strong>'+priceDrift.toLocaleString()+' job(s) came back at a total that does not match the source</strong> — do not trust these figures; see the log.</span>':' Every job total matched the source.')+
     ' Historical payments, tips, and tax are preserved in each job\'s notes.'+
-    (gs?'<div style="margin-top:8px;font-size:12.5px"><strong>Failure breakdown:</strong><br>'+gs+'</div>':'');
+    (gs?'<div style="margin-top:8px;font-size:12.5px"><strong>Failure breakdown:</strong><br>'+gs+'</div>':'')+_receipt;
   clearInterval(_jobWatchdog);
   fill.style.width='100%';
   ptext.textContent='Finished · '+done.toLocaleString()+' / '+totalOps.toLocaleString()+' operations';
@@ -3448,6 +3545,11 @@ async function startImport(){
   if(importing) return;
   const key=document.getElementById('apiKey').value.trim();
   if(!key){ alert('Paste your API key first.'); return; }
+  // Self-declared, not authenticated — but it is what puts a name on the run
+  // when someone has to work out who imported what.
+  const who=document.getElementById('operator');
+  if(who&&!who.value.trim()){ alert('Put your name in before importing — it goes on the run receipt and on every record created.'); who.focus(); return; }
+  startRun(currentKind);
   if(currentKind==='jobs'){
     if(!jobsData.length){ alert('No jobs to import.'); return; }
     if(!confirm('Import '+jobsData.length.toLocaleString()+' jobs (plus their customers, vehicles, and services) into your Urable account?')) return;
@@ -3581,6 +3683,7 @@ async function startImport(){
         if(r.ok&&r.body&&r.body.success){
           created++;
           const custId=r.body.data&&(r.body.data.id||r.body.data);
+          recordCreated(currentKind==='products'?'service':'customer',custId,(row[0]||'')+' '+(row[1]||''));
           // Vehicles → Items
           if(doVehicles&&custId&&cl(row[12])){
             for(const v of row[12].split(' | ')){
@@ -3635,12 +3738,13 @@ async function startImport(){
 
   const sb=document.getElementById('summaryBox');
   sb.style.display='block';
+  const _receipt2=receiptButtonHtml();
   sb.innerHTML='<strong>Import complete.</strong> '+created.toLocaleString()+' '+noun+' created'+
     (vehiclesCreated?', '+vehiclesCreated.toLocaleString()+' vehicles added':'')+
     (matchedExisting?' · '+matchedExisting.toLocaleString()+' already in the account (skipped)':'')+
     (failed?', <span style="color:#dc2626">'+failed+' failed</span>.':'.')+
     ' Open your Urable account to verify.'+
-    (failed?'<div style="margin-top:8px;font-size:12.5px"><strong>Failure breakdown:</strong><br>'+groupSummary+'</div>':'');
+    (failed?'<div style="margin-top:8px;font-size:12.5px"><strong>Failure breakdown:</strong><br>'+groupSummary+'</div>':'')+_receipt2;
   btn.disabled=false; btn.textContent='Start import';
   importing=false;
 }
