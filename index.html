@@ -371,13 +371,15 @@ function cleanEmail(v){
 }
 
 function parseFielddAddress(addr){
-  if(!addr) return ['','','','','','United States'];
+  if(!addr) return ['','','','','',''];
   let parts = addr.split(',').map(s=>s.trim());
   if(parts.length>=3){
-    let m = parts[parts.length-1].match(/^([A-Z]{2})\s+([\d\-]+)$/);
-    if(m) return [parts.slice(0,-2).join(', '),'',parts[parts.length-2],m[1],m[2],'United States'];
+    // trailing "ST 12345" or "BC V6B 1A1"
+    let m = parts[parts.length-1].match(/^([A-Za-z]{2})\s+([A-Za-z0-9\- ]+)$/);
+    if(m) return [parts.slice(0,-2).join(', '),'',parts[parts.length-2],m[1].toUpperCase(),m[2].trim(),
+                  countryFor(m[1],m[2],'')];
   }
-  return [addr,'','','','','United States'];
+  return [addr,'','','','',''];
 }
 
 function normalizeAusState(s){
@@ -387,11 +389,49 @@ function normalizeAusState(s){
   return map[s]||s;
 }
 
-function inferCountry(phone,state){
+// Canada is NANP too, so a 10-digit number says nothing about which country a
+// record is in. A whole TintWiz account came across as United States because
+// every row was "BC" — British Columbia — and the phone rule claimed it.
+// Province and postal-code shape are the signals that actually distinguish.
+const CA_PROVINCES=new Set(['AB','BC','MB','NB','NL','NS','NT','NU','ON','PE','QC','SK','YT']);
+const CA_PROVINCE_NAMES={'alberta':'AB','british columbia':'BC','manitoba':'MB',
+  'new brunswick':'NB','newfoundland':'NL','newfoundland and labrador':'NL',
+  'northwest territories':'NT','nova scotia':'NS','nunavut':'NU','ontario':'ON',
+  'prince edward island':'PE','quebec':'QC','québec':'QC','saskatchewan':'SK','yukon':'YT'};
+// A1A 1A1 — unambiguous, no other country we handle uses it.
+const isCaPostal=v=>/^[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d$/.test(cl(v));
+const isUsZip=v=>/^\d{5}(-\d{4})?$/.test(cl(v));
+function caProvince(state){
+  const st=cl(state);
+  if(!st) return '';
+  if(CA_PROVINCES.has(st.toUpperCase())) return st.toUpperCase();
+  return CA_PROVINCE_NAMES[st.toLowerCase()]||'';
+}
+// "NT" is both Northwest Territories and Australia's Northern Territory — the
+// postal code decides, and neither wins on the state code alone.
+function isCanada(state,zip){
+  if(isCaPostal(zip)) return true;
+  const p=caProvince(state);
+  if(!p) return false;
+  if(p==='NT') return isCaPostal(zip);
+  return !isUsZip(zip);
+}
+
+function inferCountry(phone,state,zip){
   let p = cl(phone).replace(/^'+/,'');
   if(p.startsWith('+61')) return 'Australia';
+  if(isCanada(state,zip)) return 'Canada';
   const au=['QLD','NSW','VIC','WA','SA','TAS','NT','ACT'];
   if(au.includes(normalizeAusState(state))) return 'Australia';
+  return '';
+}
+// Every converter that used to write 'United States' the moment it saw a state
+// goes through here instead, so one shop in Ontario is no longer filed in Ohio.
+function countryFor(state,zip,phone){
+  if(isCanada(state,zip)) return 'Canada';
+  const au=inferCountry(phone,state,zip);
+  if(au) return au;
+  if(cl(state)||isUsZip(zip)) return 'United States';
   return '';
 }
 
@@ -619,7 +659,7 @@ function convertEBMS(data){
     if(c5) np.push('Contact: '+c5);
     out.push([first,last,isBiz(first,last)?'Business':'Person',
       cl(r['Address 1']),cl(r['Address 2']),cl(r['City']),state,cl(r['Zip']),
-      state?'United States':'',phone,email,np.join(' | '),'']);
+      countryFor(state,cl(r['Zip']),phone),phone,email,np.join(' | '),'']);
   }
   return dedup(out);
 }
@@ -706,7 +746,7 @@ function convertTintWiz(data){
     if(recType&&recType!=='Customer') np.push('Status: '+recType);
     if(phone2) np.push('Alt phone: '+phone2);
     out.push([first,last,biz?'Business':'Person',
-      addr1,addr2,city,state,zip,state?'United States':'',
+      addr1,addr2,city,state,zip,countryFor(state,zip,phone),
       phone,email,np.join(' | '),item]);
   }
   return out;
@@ -728,7 +768,7 @@ function convertDetailBookie(data){
     let email=cleanEmail(r['email']);
     let a1=cl(r['address_line_1']),a2=cl(r['address_line_2']);
     let city=cl(r['address_city']),state=cl(r['address_state_code']),zip=cl(r['address_zip_code']);
-    let country=(state||phone)?'United States':'';
+    let country=countryFor(state,zip,phone);
     // Vehicles: newline-separated, drop blanks and the "(and more…)" marker
     let seenV=new Set(),vehicles=[];
     for(let v of cl(r['vehicles']).split(/\n/)){
@@ -840,7 +880,7 @@ function convertMTRX(data){
     const city=cl(r['city']).replace(/\s+/g,' ').trim();
     const state=abbrState(r['state']);
     const zip=cl(r['zip']).replace(/\.0$/,'');
-    const country=(state||/^\d{5}(-\d{4})?$/.test(zip))?'United States':'';
+    const country=countryFor(state,zip,phone);
     const np=[];
     if(company) np.push('Company: '+company);
     if(cat==='wholesale') np.push('MTRX category: wholesale');
@@ -900,7 +940,7 @@ function convertSquareAlt(data){
     if(!first&&!phone&&!email) continue;
     let a1=cl(r['Street Address 1']),a2=cl(r['Street Address 2']);
     let city=cl(r['City']),state=cl(r['State']),zip=cl(r['Postal Code']);
-    let country=(state||zip||phone.length===10)?'United States':'';
+    let country=countryFor(state,zip,phone);
     let np=[];
     let memo=cl(r['Memo']);
     if(memo) np.push(memo);
@@ -2135,8 +2175,11 @@ const AU_STATES=new Set(['QLD','NSW','VIC','WA','SA','TAS','NT','ACT']);
 // The API requires a valid country on every location — infer when missing
 function inferISO(state,zip,phone){
   const st=cl(state).toUpperCase();
+  // Canada first: its provinces don't collide with US state codes, and a
+  // 10-digit NANP number is just as Canadian as it is American.
+  if(isCanada(state,zip)) return 'CA';
   if(US_STATES.has(st)&&st!=='WA'&&st!=='SA'&&st!=='NT') return 'US'; // WA/SA/NT ambiguous with AU
-  if(/^\d{5}(-\d{4})?$/.test(cl(zip))) return 'US';
+  if(isUsZip(zip)) return 'US';
   const d=cl(phone).replace(/\D/g,'');
   if(AU_STATES.has(st)&&/^\d{4}$/.test(cl(zip))) return 'AU';
   if(d.length===10||(d.length===11&&d[0]==='1')) return 'US';
