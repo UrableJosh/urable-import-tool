@@ -86,33 +86,31 @@ Urable importer rejects files with stray columns hanging off the end.
 - Customer-list de-duplication happens **within the file being imported** — it
   does not match against customers already in the account.
 
-## Offline tests
+## Offline test
 
-No keys, no account, no network — both run under plain node:
+No keys, no account, no network — runs under plain node:
 
 ```bash
-node harness-sync.test.js && node migration-harness.test.js
+node migration-harness.test.js
 ```
 
-`migration-harness.test.js` runs the account-to-account copy against a stubbed
-API across nine scenarios: read-only preview, the copy, idempotent re-run, the
-same-account and vehicles-without-customers guards, a destination failure being
-reported rather than swallowed, a lawn-care source keeping its categories and
-industry, six category shapes the API might return, and the real
-categoryRef-with-no-categories-endpoint case.
+Nine scenarios against a stubbed API: read-only preview, the copy, an idempotent
+re-run, the same-account and vehicles-without-customers guards, a destination
+failure being reported rather than swallowed, a lawn-care source keeping its
+categories and industry, six category shapes the API might return, and the real
+categoryRef-with-no-categories-endpoint case. 36 assertions.
 
-It carries its **own copy** of the account-copy functions so it can run without a
-browser — which means that copy can drift from `index.html` and pass while
-testing code nobody ships. `harness-sync.test.js` compares the two and fails if
-they diverge. Run it first; if it reports drift, re-sync the harness from
-`index.html` before trusting any result.
+**It loads the account-copy section straight out of `index.html`** rather than
+carrying its own copy, so what it tests is what ships. Verified by removing the
+source-write guard from `index.html` and watching the harness fail. If the
+section is renamed or moved, the harness stops with a message instead of
+silently passing — update the markers near the top of the file.
 
 ## Repo contents
 - `index.html` — the tool
 - `README.md` — this file
 - `walkthrough/` — the CS walkthrough, its images, step script, and `capture.js`
 - `migration-harness.test.js` — offline test for the account-to-account copy
-- `harness-sync.test.js` — fails if the harness has drifted from `index.html`
 
 See `claude/START_HERE_Import_Tool.md` in the Urable project for the full
 history, open threads, and the Kyle list.
