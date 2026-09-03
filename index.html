@@ -3428,6 +3428,10 @@ async function importJobsRun(key){
     const payload={customerId:custId,itemIds:itemIds,type:j.type,status:j.status,
       industry:j.industry||selectedIndustry(),
       lineItems:lineItems,autoTax:false};
+    // Never fire the "job scheduled" confirmation text/email on an import.
+    // The API already defaults this to false; pin it explicitly so a bulk
+    // run can never mass-message a shop's customers if that default moves.
+    payload.deployScheduledMessage=false;
     if(j.title) payload.name=j.title;
     if(j.start) payload.start=j.start;
     if(j.end) payload.end=j.end;
