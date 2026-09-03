@@ -1152,8 +1152,17 @@ function groupTemplateVariants(rows){
     const key=(r[1]+'\u0000'+r[10]).toLowerCase();       // category + base name
     if(!groups.has(key)){ groups.set(key,{r:r.slice(0,10),base:r[10],labels:[],prices:[]}); order.push(key); }
     const g=groups.get(key);
-    g.labels.push(r[11]||'Standard');
-    g.prices.push(r[5]);
+    // A row can already hold several labelled prices ("All Sides & Back Glass;
+    // Front 2 Windows"). Pushing the whole price string against a single label
+    // left the extra prices unnamed, and Urable rejects an unlabelled price on
+    // a multi-price service. Expand the row and compose the two levels of name.
+    const own=cl(r[4])?r[4].split(';').map(x=>x.trim()):[];
+    const ps=cl(r[5])?r[5].split(';').map(x=>x.trim()).filter(Boolean):[];
+    (ps.length?ps:['']).forEach((p,i)=>{
+      const outer=r[11]||'', inner=own[i]||'';
+      g.labels.push([outer,inner].filter(Boolean).join(' \u2013 ')||'Standard');
+      g.prices.push(p);
+    });
   }
   const out=[];
   for(const key of order){
@@ -1231,38 +1240,16 @@ function tidyDesc(v){
           .trim();
 }
 
-// Vehicle-care catalogs almost never ship a category column, and dropping 40+
-// services into one "Imported" bucket is a catalog nobody wants to work in.
-// Order matters: removals and coatings are tested before the film and tint
-// rules that would otherwise swallow them ("Paint Protection Film Removal" is
-// a removal, "MMT Ceramic Coating" is a coating and not a ceramic tint).
-const VC_CATEGORY_RULES=[
-  [/\bremovals?\b|\bremove\b|^r\s*&\s*i$/i,                    'Removals'],
-  [/ceramic coating|maintenance wash/i,                        'Ceramic Coating'],
-  [/paint correction|detailing|\bpolish/i,                     'Detailing & Paint Correction'],
-  [/wincrest|windshield protection/i,                          'Windshield Protection'],
-  [/paint protection film|\bppf\b|clear bra|scrape armor/i,    'Paint Protection Film'],
-  [/tint|window film|visor strip|windshield|sunroof|ceramic|nano carbon/i,'Window Tint'],
-  [/taillight|headlight/i,                                     'Lighting Tint'],
-  [/wrap|vinyl|chrome delete|decal|graphic/i,                  'Vinyl & Wraps'],
-  [/powder coat|caliper|\bwheels?\b/i,                         'Wheels & Calipers'],
-];
-function guessCategory(name){
-  for(const rule of VC_CATEGORY_RULES) if(rule[0].test(name)) return rule[1];
-  return '';
-}
-// Fill blank categories on converted product rows. The keyword rules are
-// vehicle-care vocabulary, so they are only trusted when they actually explain
-// most of the catalog — a lawn-care or glass price list matches almost nothing
-// and is left alone rather than being sorted into confident nonsense.
+// A converted catalog with no category of its own lands in one plain bucket.
+// Guessing categories from service names means guessing this shop's taxonomy
+// from the outside, which is a judgement call the shop should make — they can
+// split "Services" up in Urable in a few minutes, and a wrong guess is more
+// work to undo than a flat list is to organise.
+const DEFAULT_PRODUCT_CATEGORY='Services';
 function fillCategories(rows){
-  const blanks=rows.filter(r=>!cl(r[1]));
-  if(!blanks.length) return rows;
-  const guesses=blanks.map(r=>guessCategory(r[2]));
-  const hit=guesses.filter(Boolean).length;
-  if(hit/blanks.length<0.5) return rows;
-  blanks.forEach((r,i)=>{ r[1]=guesses[i]||'Other Services'; });
-  rows._categorized=hit;
+  let filled=0;
+  for(const r of rows){ if(!cl(r[1])){ r[1]=DEFAULT_PRODUCT_CATEGORY; filled++; } }
+  rows._defaulted=filled;
   return rows;
 }
 
@@ -1981,7 +1968,8 @@ function processRaw(raw, filename){
       // has to know before it starts writing jobs against it.
       const gaps=[];
       if(rows._zeroPoints) gaps.push(rows._zeroPoints+' price'+(rows._zeroPoints===1?'':'s')+' at $0.00 to fill in, across '+rows._zeroServices+' service'+(rows._zeroServices===1?'':'s'));
-      if(rows._categorized) gaps.push(rows._categorized+' sorted into categories');
+      if(rows._defaulted===rows.length) gaps.push('no categories in the export \u2014 all filed under \u201c'+DEFAULT_PRODUCT_CATEGORY+'\u201d');
+      else if(rows._defaulted) gaps.push(rows._defaulted+' without a category \u2014 filed under \u201c'+DEFAULT_PRODUCT_CATEGORY+'\u201d');
       showDetected(pn[prodPlatform], rows.length, 0, gaps.join(' · '));
       showPreview(rows);
       setImportModeUI();
@@ -2345,7 +2333,7 @@ function rowToProductPayload(row){
   p.industry=selectedIndustry(); // required by the API
   if(description) p.description=description;
   // The API requires a category on every product (undocumented) — fall back
-  p.categoryName=category||'Imported';
+  p.categoryName=category||DEFAULT_PRODUCT_CATEGORY;
   p.taxable=String(taxable).toLowerCase()==='true';
   const labelArr=cl(labels)?labels.split(';').map(s=>s.trim()):[];
   const priceArr=cl(prices)?prices.split(';').map(s=>s.trim()):[];
