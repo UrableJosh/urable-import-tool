@@ -232,10 +232,10 @@ tbody tr:last-child td{border-bottom:none}
       <div id="jobsWarning" class="warn-box" style="display:none">
         <strong>Before you start a jobs import</strong>
         <ol>
-          <li><strong>Turn off automated scheduled messages</strong> and <strong>deactivate workflows</strong> in the account. A bulk import creates hundreds of jobs at once, and any workflow watching for new or completed jobs will fire on every one of them &mdash; real messages to the shop&rsquo;s real customers.</li>
-          <li>Run the import.</li>
+          <li><strong>Scheduled messages: leave them on.</strong> Every job this tool creates is marked so Urable suppresses the &ldquo;job scheduled&rdquo; confirmation &mdash; no customer is messaged by the import, even with the account&rsquo;s auto-deploy preference on. Short-term appointment reminders still attach to each job as normal, so upcoming work keeps its reminders.</li>
+          <li><strong>Deactivate workflows</strong> while the import runs. A bulk import creates hundreds of jobs at once, and a workflow watching for new or completed jobs can fire on every one of them.</li>
+          <li>Run the import, then turn workflows back on.</li>
           <li>Consider a workflow on <strong>Completed &rarr; send payment request</strong> to sweep up imported jobs that still owe money, since they bypassed the normal flow.</li>
-          <li>Turn scheduled messages and workflows back on.</li>
         </ol>
       </div>
       <div class="check-row">
@@ -684,6 +684,27 @@ function convertGHL(data){
   return dedup(out);
 }
 
+// TintWiz stashes the whole web-lead form in one custom_fields blob. Most of it
+// is form scaffolding, but the service asked for, the shop location, the
+// preferred contact method and the SMS consent line are real customer record.
+function tintwizForm(v){
+  const out=[]; let consent=false;
+  for(const line of cl(v).split(/\n+/)){
+    const m=line.match(/^\s*([^:]{1,45}):\s*(.*)$/);
+    if(!m) continue;
+    const k=m[1].trim(), val=m[2].trim();
+    if(/i agree to receive/i.test(val)) consent=true;
+    else if(/agree to receive text/i.test(k)&&/^(yes|true|i agree)/i.test(val)) consent=true;
+    if(!val) continue;
+    if(/^service needed$/i.test(k)) out.push('Interested in: '+val);
+    else if(/location/i.test(k)) out.push('Location: '+val);
+    else if(/^preferred method of communication$/i.test(k)) out.push('Prefers: '+val);
+    else if(/^discount code$/i.test(k)) out.push('Discount code: '+val);
+  }
+  if(consent) out.push('SMS consent on file');
+  return out;
+}
+
 function convertTintWiz(data){
   const BIZ=['llc','inc','corp','co.','construction','lumber','outdoor','auto','shop',
     'studio','spa','contractors','remodelers','enterprises','company','industries',
@@ -745,6 +766,27 @@ function convertTintWiz(data){
     if(tags) np.push('Tags: '+tags);
     if(recType&&recType!=='Customer') np.push('Status: '+recType);
     if(phone2) np.push('Alt phone: '+phone2);
+    // Lead source, the web-form answers and the original enquiry are the only
+    // record of where a customer came from and what they wanted. They have no
+    // column in Urable's template, so they ride along in Notes rather than
+    // being dropped on the floor.
+    const campaign=cl(base['campaign'])||cl((group.find(r=>cl(r['campaign']))||{})['campaign']);
+    if(campaign) np.push('Lead source: '+campaign);
+    const formRow=group.find(r=>cl(r['custom_fields']))||base;
+    for(const bit of tintwizForm(formRow['custom_fields'])) np.push(bit);
+    // Consent is given once and holds for the customer, so take it from any of
+    // their rows — not just whichever one happened to carry the richest form.
+    if(!np.some(b=>b==='SMS consent on file')&&
+       group.some(r=>tintwizForm(r['custom_fields']).includes('SMS consent on file')))
+      np.push('SMS consent on file');
+    const created=cl(base['created_at']).slice(0,10);
+    if(created) np.push('Customer since: '+created);
+    let msg=cl(base['message'])||cl((group.find(r=>cl(r['message']))||{})['message']);
+    if(msg){
+      msg=msg.replace(/\s*\n\s*/g,' ').replace(/\s{2,}/g,' ');
+      if(msg.length>240) msg=msg.slice(0,237).replace(/\s+\S*$/,'')+'…';
+      np.push('Inquiry: '+msg);
+    }
     out.push([first,last,biz?'Business':'Person',
       addr1,addr2,city,state,zip,countryFor(state,zip,phone),
       phone,email,np.join(' | '),item]);
@@ -1174,36 +1216,77 @@ function convertUrableTemplateFlex(data){
   return grouped.length<out.length?grouped:out.map(r=>r.slice(0,10));
 }
 
+function tidyDesc(v){
+  // Marketing copy in these exports is markdown with headers, **_emphasis_**
+  // and bullet lists. Urable renders a product description as plain text, so
+  // the syntax would show up literally. Strip it, keep every word.
+  let s=cl(v);
+  if(!s) return '';
+  return s.replace(/\*\*_|_\*\*/g,'')
+          .replace(/\*\*|__|\*/g,'')
+          .replace(/^#+\s*/gm,'')
+          .replace(/^\s*[-\u2022]\s*/gm,'\u2022 ')
+          .replace(/\s*\n\s*/g,' ')
+          .replace(/\s{2,}/g,' ')
+          .trim();
+}
+
 function convertNameVariantPrice(data){
   // Two-dimension variants: "Ceramic Coating (Sedan)" + explanation "3 Year"
   // → base "Ceramic Coating", label "Sedan – 3 Year"
   let groups={}, order=[];
   for(const r of data){
-    let name=cl(r['name']||r['Name']);
+    // TintWiz lets the same service repeat with a stray double space
+    let name=cl(r['name']||r['Name']).replace(/\s{2,}/g,' ');
     if(!name) continue;
+    // A blank price is a real service the shop quotes per job, not a bad row.
+    // Dropping it deleted the service outright, and where one tier was priced
+    // and another was not it silently handed the survivor's price to the whole
+    // service — an entry that reads correct and bills wrong. Keep both.
     const price=cleanPrice(r['price']||r['Price']);
-    if(price===null) continue;
     const tier=cl(r['explanation']||r['variant']||r['option']||'');
-    const desc=cl(r['description']||r['Description']).replace(/\s*\n\s*/g,' ');
+    const desc=tidyDesc(r['description']||r['Description']);
     let base=name, dim1='';
     const pm=name.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
     if(pm){ base=pm[1].trim(); dim1=pm[2].trim(); }
     const label=[dim1,tier].filter(Boolean).join(' – ');
     const key=base.toLowerCase();
-    if(!groups[key]){groups[key]={base,desc,labels:[],prices:[]};order.push(key);}
+    if(!groups[key]){groups[key]={base,desc,labels:[],prices:[],unpriced:[]};order.push(key);}
     const g=groups[key];
     if(!g.desc&&desc) g.desc=desc;
+    if(price===null){ g.unpriced.push(label); continue; }
     g.labels.push(label);
     g.prices.push(price);
   }
-  let out=[];
+  let out=[], noPriceAtAll=0, partiallyPriced=0;
   for(const key of order){
     const g=groups[key];
-    const multi=g.prices.length>1;
-    out.push(['service','',g.base,g.desc,
+    let desc=g.desc;
+    // Two identical amounts cannot be two price points, so unpriced tiers
+    // would collapse into one nameless $0. Name them in the description
+    // instead — the shop can price them without going back to TintWiz.
+    const named=g.unpriced.filter(Boolean);
+    if(g.prices.length&&g.unpriced.length){
+      partiallyPriced++;
+      if(named.length) desc=[desc,'Needs pricing: '+named.join('; ')].filter(Boolean).join(' | ');
+    }
+    if(!g.prices.length){
+      // Nothing priced anywhere: still create the service, at zero, so it
+      // exists in the catalog to be priced rather than vanishing.
+      noPriceAtAll++;
+      if(named.length>1) desc=[desc,'Needs pricing: '+named.join('; ')].filter(Boolean).join(' | ');
+      g.labels.push(named.length===1?named[0]:'Price not set');
+      g.prices.push(0);
+    }
+    // Name the point whenever the service has other tiers, priced or not —
+    // an unlabelled "$248" hides that it is only Front 2 Windows.
+    const multi=g.prices.length>1||g.unpriced.length>0;
+    out.push(['service','',g.base,desc,
       multi?g.labels.map((l,i)=>l||('Option '+(i+1))).join('; '):'',
       g.prices.map(fmtPrice).join('; '),'','true','','']);
   }
+  out._noPriceAtAll=noPriceAtAll;
+  out._partiallyPriced=partiallyPriced;
   return out;
 }
 
@@ -1865,7 +1948,12 @@ function processRaw(raw, filename){
       const pn={'hcp':'Housecall Pro pricebook','genericprod':'Services list','urableprod':'Urable products export','urabletemplate':'Urable products template','squarecat':'Square catalog','jobberprod':'Jobber products','namevariant':'Services list (tiered)'};
       sourcePlatformName=pn[prodPlatform];
       document.getElementById('originName').textContent=sourcePlatformName;
-      showDetected(pn[prodPlatform], rows.length, 0);
+      // A catalog that came over without prices is not an error, but the shop
+      // has to know before it starts writing jobs against it.
+      const gaps=[];
+      if(rows._noPriceAtAll) gaps.push(rows._noPriceAtAll+' with no price in the export');
+      if(rows._partiallyPriced) gaps.push(rows._partiallyPriced+' missing some option prices');
+      showDetected(pn[prodPlatform], rows.length, 0, gaps.join(' · '));
       showPreview(rows);
       setImportModeUI();
       return;
@@ -2065,13 +2153,13 @@ function revealResult(el){
   });
 }
 
-function showDetected(platform, count, dupes){
+function showDetected(platform, count, dupes, extra){
   document.getElementById('statusCard').style.display='block';
   let d=document.getElementById('detected');
   document.getElementById('detBadge').textContent=platform;
   document.getElementById('detText').textContent='Mapped to the Urable template';
   document.getElementById('detStats').textContent=
-    count.toLocaleString()+(currentKind==='products'?' services':' customers')+(dupes>0?' · '+dupes+' duplicates removed':'');
+    count.toLocaleString()+(currentKind==='products'?' services':' customers')+(dupes>0?' · '+dupes+' duplicates removed':'')+(extra?' · '+extra:'');
   d.classList.add('show');
   revealResult(document.getElementById('statusCard'));
 }
