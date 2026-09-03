@@ -1231,6 +1231,41 @@ function tidyDesc(v){
           .trim();
 }
 
+// Vehicle-care catalogs almost never ship a category column, and dropping 40+
+// services into one "Imported" bucket is a catalog nobody wants to work in.
+// Order matters: removals and coatings are tested before the film and tint
+// rules that would otherwise swallow them ("Paint Protection Film Removal" is
+// a removal, "MMT Ceramic Coating" is a coating and not a ceramic tint).
+const VC_CATEGORY_RULES=[
+  [/\bremovals?\b|\bremove\b|^r\s*&\s*i$/i,                    'Removals'],
+  [/ceramic coating|maintenance wash/i,                        'Ceramic Coating'],
+  [/paint correction|detailing|\bpolish/i,                     'Detailing & Paint Correction'],
+  [/wincrest|windshield protection/i,                          'Windshield Protection'],
+  [/paint protection film|\bppf\b|clear bra|scrape armor/i,    'Paint Protection Film'],
+  [/tint|window film|visor strip|windshield|sunroof|ceramic|nano carbon/i,'Window Tint'],
+  [/taillight|headlight/i,                                     'Lighting Tint'],
+  [/wrap|vinyl|chrome delete|decal|graphic/i,                  'Vinyl & Wraps'],
+  [/powder coat|caliper|\bwheels?\b/i,                         'Wheels & Calipers'],
+];
+function guessCategory(name){
+  for(const rule of VC_CATEGORY_RULES) if(rule[0].test(name)) return rule[1];
+  return '';
+}
+// Fill blank categories on converted product rows. The keyword rules are
+// vehicle-care vocabulary, so they are only trusted when they actually explain
+// most of the catalog — a lawn-care or glass price list matches almost nothing
+// and is left alone rather than being sorted into confident nonsense.
+function fillCategories(rows){
+  const blanks=rows.filter(r=>!cl(r[1]));
+  if(!blanks.length) return rows;
+  const guesses=blanks.map(r=>guessCategory(r[2]));
+  const hit=guesses.filter(Boolean).length;
+  if(hit/blanks.length<0.5) return rows;
+  blanks.forEach((r,i)=>{ r[1]=guesses[i]||'Other Services'; });
+  rows._categorized=hit;
+  return rows;
+}
+
 function convertNameVariantPrice(data){
   // Two-dimension variants: "Ceramic Coating (Sedan)" + explanation "3 Year"
   // → base "Ceramic Coating", label "Sedan – 3 Year"
@@ -1239,54 +1274,47 @@ function convertNameVariantPrice(data){
     // TintWiz lets the same service repeat with a stray double space
     let name=cl(r['name']||r['Name']).replace(/\s{2,}/g,' ');
     if(!name) continue;
-    // A blank price is a real service the shop quotes per job, not a bad row.
-    // Dropping it deleted the service outright, and where one tier was priced
-    // and another was not it silently handed the survivor's price to the whole
-    // service — an entry that reads correct and bills wrong. Keep both.
+    // A blank price is a real tier the shop quotes per job, not a bad row.
+    // Dropping it deleted services outright, and where one tier was priced and
+    // another was not it handed the survivor's price to the whole service — an
+    // entry that reads correct and bills wrong. Urable takes 0.00, so every
+    // tier comes over carrying its own name and the shop fills in the blanks.
     const price=cleanPrice(r['price']||r['Price']);
     const tier=cl(r['explanation']||r['variant']||r['option']||'');
     const desc=tidyDesc(r['description']||r['Description']);
+    const srcCat=cl(r['category']||r['Category']||r['group']||r['Group']||r['department']||r['Department']);
     let base=name, dim1='';
     const pm=name.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
     if(pm){ base=pm[1].trim(); dim1=pm[2].trim(); }
     const label=[dim1,tier].filter(Boolean).join(' – ');
     const key=base.toLowerCase();
-    if(!groups[key]){groups[key]={base,desc,labels:[],prices:[],unpriced:[]};order.push(key);}
+    if(!groups[key]){groups[key]={base,desc,cat:srcCat,labels:[],prices:[],zeros:0};order.push(key);}
     const g=groups[key];
     if(!g.desc&&desc) g.desc=desc;
-    if(price===null){ g.unpriced.push(label); continue; }
+    if(!g.cat&&srcCat) g.cat=srcCat;
     g.labels.push(label);
-    g.prices.push(price);
+    g.prices.push(price===null?0:price);
+    if(price===null) g.zeros++;
   }
-  let out=[], noPriceAtAll=0, partiallyPriced=0;
+  let out=[], zeroServices=0, zeroPoints=0;
   for(const key of order){
     const g=groups[key];
-    let desc=g.desc;
-    // Two identical amounts cannot be two price points, so unpriced tiers
-    // would collapse into one nameless $0. Name them in the description
-    // instead — the shop can price them without going back to TintWiz.
-    const named=g.unpriced.filter(Boolean);
-    if(g.prices.length&&g.unpriced.length){
-      partiallyPriced++;
-      if(named.length) desc=[desc,'Needs pricing: '+named.join('; ')].filter(Boolean).join(' | ');
-    }
-    if(!g.prices.length){
-      // Nothing priced anywhere: still create the service, at zero, so it
-      // exists in the catalog to be priced rather than vanishing.
-      noPriceAtAll++;
-      if(named.length>1) desc=[desc,'Needs pricing: '+named.join('; ')].filter(Boolean).join(' | ');
-      g.labels.push(named.length===1?named[0]:'Price not set');
-      g.prices.push(0);
-    }
-    // Name the point whenever the service has other tiers, priced or not —
-    // an unlabelled "$248" hides that it is only Front 2 Windows.
-    const multi=g.prices.length>1||g.unpriced.length>0;
-    out.push(['service','',g.base,desc,
-      multi?g.labels.map((l,i)=>l||('Option '+(i+1))).join('; '):'',
+    if(g.zeros){ zeroServices++; zeroPoints+=g.zeros; }
+    // Urable rejects an unlabelled price when a service carries more than one.
+    // Every tier here has a name from the export; 'Option N' only ever covers a
+    // source row that had no tier name at all.
+    const multi=g.prices.length>1;
+    // A single tier keeps its name too — "R&I / Remove & Install" is worth
+    // having — unless the name already says it ("Ceramic Plus Windshield"
+    // priced as "Windshield" reads as a stutter).
+    const lone=g.labels[0]||'';
+    const useLabels=multi||(lone&&!g.base.toLowerCase().includes(lone.toLowerCase()));
+    out.push(['service',g.cat,g.base,g.desc,
+      useLabels?g.labels.map((l,i)=>l||('Option '+(i+1))).join('; '):'',
       g.prices.map(fmtPrice).join('; '),'','true','','']);
   }
-  out._noPriceAtAll=noPriceAtAll;
-  out._partiallyPriced=partiallyPriced;
+  out._zeroServices=zeroServices;
+  out._zeroPoints=zeroPoints;
   return out;
 }
 
@@ -1948,11 +1976,12 @@ function processRaw(raw, filename){
       const pn={'hcp':'Housecall Pro pricebook','genericprod':'Services list','urableprod':'Urable products export','urabletemplate':'Urable products template','squarecat':'Square catalog','jobberprod':'Jobber products','namevariant':'Services list (tiered)'};
       sourcePlatformName=pn[prodPlatform];
       document.getElementById('originName').textContent=sourcePlatformName;
+      fillCategories(rows);
       // A catalog that came over without prices is not an error, but the shop
       // has to know before it starts writing jobs against it.
       const gaps=[];
-      if(rows._noPriceAtAll) gaps.push(rows._noPriceAtAll+' with no price in the export');
-      if(rows._partiallyPriced) gaps.push(rows._partiallyPriced+' missing some option prices');
+      if(rows._zeroPoints) gaps.push(rows._zeroPoints+' price'+(rows._zeroPoints===1?'':'s')+' at $0.00 to fill in, across '+rows._zeroServices+' service'+(rows._zeroServices===1?'':'s'));
+      if(rows._categorized) gaps.push(rows._categorized+' sorted into categories');
       showDetected(pn[prodPlatform], rows.length, 0, gaps.join(' · '));
       showPreview(rows);
       setImportModeUI();
