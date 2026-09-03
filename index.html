@@ -1149,7 +1149,13 @@ function groupTemplateVariants(rows){
   // rows are already normalised template rows: [type,cat,name,desc,labels,prices,...]
   const groups=new Map(), order=[];
   for(const r of rows){
-    const key=(r[1]+'\u0000'+r[10]).toLowerCase();       // category + base name
+    // Two DIFFERENTLY-named services ("Ceramic Plus" and "Ceramic Plus -
+    // CyberTruck") only collapse into one when their descriptions match
+    // exactly. A shop that wrote separate copy for the Cybertruck meant it to
+    // be a separate service; a variant sheet whose rows share one description
+    // (or have none) is the case this grouping was built for. Same-NAME rows
+    // are unaffected — their tiers still become labels on one service.
+    const key=(r[1]+'\u0000'+r[10]+'\u0000'+r[3]).toLowerCase();
     if(!groups.has(key)){ groups.set(key,{r:r.slice(0,10),base:r[10],labels:[],prices:[]}); order.push(key); }
     const g=groups.get(key);
     // A row can already hold several labelled prices ("All Sides & Back Glass;
