@@ -1186,7 +1186,8 @@ function convertUrableTemplateFlex(data){
     const name=cl(r['Name']);
     if(!name) continue;
     const type=cl(r['Type']).toLowerCase()==='product'?'product':'service';
-    const desc=cl(r['Description']).replace(/[\u2028\u2029]/g,' ').replace(/\s*\n\s*/g,' ');
+    // keep embeds on their own line through a round-trip of an already-converted file
+    const desc=spaceEmbeds(cl(r['Description']).replace(/[\u2028\u2029]/g,' ').replace(/\s*\n\s*/g,' '));
     let labels=cl(r['Labels']||'');
     let prices=cl(r['Prices']||r['Price']||'');
     // Some sheets use Labels as a comma-separated TAG list ("PPF, Package,
@@ -1225,19 +1226,29 @@ function convertUrableTemplateFlex(data){
   return grouped.length<out.length?grouped:out.map(r=>r.slice(0,10));
 }
 
+// An embedded <iframe> — TintWiz descriptions carry the shop's own videos — has
+// to sit on its own line. Run inline with the copy, the browser floats the text
+// around the player and the paragraph wraps into the video.
+function spaceEmbeds(v){
+  return String(v||'')
+    .replace(/\s*(<iframe\b)/gi,'\n\n$1')
+    .replace(/(<\/iframe>)\s*/gi,'$1\n\n')
+    .replace(/\n{3,}/g,'\n\n')
+    .trim();
+}
+
 function tidyDesc(v){
   // Marketing copy in these exports is markdown with headers, **_emphasis_**
   // and bullet lists. Urable renders a product description as plain text, so
   // the syntax would show up literally. Strip it, keep every word.
   let s=cl(v);
   if(!s) return '';
-  return s.replace(/\*\*_|_\*\*/g,'')
+  return spaceEmbeds(s.replace(/\*\*_|_\*\*/g,'')
           .replace(/\*\*|__|\*/g,'')
           .replace(/^#+\s*/gm,'')
           .replace(/^\s*[-\u2022]\s*/gm,'\u2022 ')
           .replace(/\s*\n\s*/g,' ')
-          .replace(/\s{2,}/g,' ')
-          .trim();
+          .replace(/\s{2,}/g,' '));
 }
 
 // A converted catalog with no category of its own lands in one plain bucket.
