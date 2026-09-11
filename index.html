@@ -4044,11 +4044,18 @@ async function startImport(){
             for(const v of list){
               if(!v.name) continue;
               const body={customerId:custId, name:v.name, type:v.type||'automotive', industry:selectedIndustry()};
-              for(const f of ['year','make','model','color','vin','licensePlate','subType']){
-                if(cl(v[f])) body[f]=cl(v[f]);
-              }
-              if(v.mileage!==''&&v.mileage!=null&&isFinite(v.mileage)&&Number(v.mileage)>0) body.mileage=Number(v.mileage);
-              const vn=[cl(v.bodyStyle)?'Body style: '+cl(v.bodyStyle):'',
+              // Only the PLURAL array spellings survive a write. Verified on dev:
+              // vins/licensePlates land in metadata, while vin, licensePlate,
+              // year, make, model, trim, color — and a whole metadata object, on
+              // POST or PATCH — are accepted with a 200 and silently discarded.
+              // So everything else goes in notes rather than being lost.
+              if(cl(v.vin)) body.vins=[cl(v.vin).toUpperCase()];
+              if(cl(v.licensePlate)) body.licensePlates=[cl(v.licensePlate)];
+              const mi=(v.mileage===''||v.mileage==null)?null:Number(v.mileage);
+              const vn=[cl(v.subType)?'Trim: '+cl(v.subType):'',
+                        cl(v.color)?'Color: '+cl(v.color):'',
+                        (mi&&isFinite(mi)&&mi>0)?'Mileage: '+mi.toLocaleString():'',
+                        cl(v.bodyStyle)?'Body style: '+cl(v.bodyStyle):'',
                         cl(v.unit)?'Unit #: '+cl(v.unit):'', cl(v.notes)].filter(Boolean).join(' | ');
               if(vn) body.notes=vn;
               const ir=await apiFetch('/v1/items',{method:'POST',body:JSON.stringify(body)},key);
