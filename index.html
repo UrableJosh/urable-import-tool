@@ -141,6 +141,9 @@ tbody tr:last-child td{border-bottom:none}
         <span class="platform-tag">Jobber</span>
         <span class="platform-tag">Square catalog</span>
         <span class="platform-tag">Housecall Pro</span>
+        <span class="platform-tag">Fieldd</span>
+        <span class="platform-tag">TintWiz</span>
+        <span class="platform-tag">Urable</span>
         <span class="platform-tag any">+ Any services sheet</span>
       </div>
     </div>
@@ -1876,6 +1879,8 @@ function detectProductPlatform(filename, headers){
   if(h.includes('unit price')&&h.includes('bookable')) return 'jobberprod';
   // Fieldd: packages sheet and add-ons sheet share 'internal cost'
   if(h.includes('internal cost')&&(h.includes('package name')||h.includes('add-on name'))) return 'fielddprod';
+  // TintWiz services export: name + explanation tier + protype, exactly
+  if(h.includes('explanation')&&h.includes('price')&&h.includes('protype')) return 'tintwizprod';
   // Two-dimension variant sheets: name + explanation/variant tier + price
   if(h.includes('explanation')&&h.includes('price')) return 'namevariant';
   // Generic services sheet: a name-ish + price-ish column pair
@@ -2011,7 +2016,7 @@ function processRaw(raw, filename){
         else if(prodPlatform==='urabletemplate') rows=convertUrableTemplateFlex(rawObjRows);
         else if(prodPlatform==='squarecat') rows=convertSquareCatalog(rawObjRows);
         else if(prodPlatform==='jobberprod') rows=convertJobberProducts(rawObjRows);
-        else if(prodPlatform==='namevariant') rows=convertNameVariantPrice(rawObjRows);
+        else if(prodPlatform==='namevariant'||prodPlatform==='tintwizprod') rows=convertNameVariantPrice(rawObjRows);
         else if(prodPlatform==='fielddprod') rows=convertFielddProducts(rawObjRows);
         else {
           const hs=headerRow.map(x=>cl(x));
@@ -2028,7 +2033,7 @@ function processRaw(raw, filename){
       if(!rows.length){ showError('No products/services found in this file.'); return; }
       currentKind='products';
       convertedRows=rows;
-      const pn={'hcp':'Housecall Pro pricebook','genericprod':'Services list','urableprod':'Urable products export','urabletemplate':'Urable products template','squarecat':'Square catalog','jobberprod':'Jobber products','namevariant':'Services list (tiered)','fielddprod':'Fieldd catalog'};
+      const pn={'hcp':'Housecall Pro pricebook','genericprod':'Services list','urableprod':'Urable products export','urabletemplate':'Urable products template','squarecat':'Square catalog','jobberprod':'Jobber products','namevariant':'Services list (tiered)','tintwizprod':'TintWiz services','fielddprod':'Fieldd catalog'};
       sourcePlatformName=pn[prodPlatform];
       document.getElementById('originName').textContent=sourcePlatformName;
       fillCategories(rows);
