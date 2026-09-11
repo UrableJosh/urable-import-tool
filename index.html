@@ -1322,6 +1322,54 @@ function convertNameVariantPrice(data){
   return out;
 }
 
+// Fieldd splits a shop's catalog across two exports — packages (marketing copy,
+// duration, internal cost) and add-ons/fees (name, price, cost) — with the same
+// column vocabulary in both. One row is one service; Fieldd has no tier concept,
+// so nothing is grouped here.
+function fielddMinutes(v){
+  const t=cl(v).toLowerCase();
+  if(!t) return null;
+  let mins=0, seen=false;
+  const h=t.match(/(\d+(?:\.\d+)?)\s*(?:hr|hour)/);
+  if(h){ mins+=parseFloat(h[1])*60; seen=true; }
+  const m=t.match(/(\d+)\s*min/);
+  if(m){ mins+=parseInt(m[1],10); seen=true; }
+  if(!seen){ const n=parseFloat(t); if(!isNaN(n)){ mins=n; seen=true; } }
+  return seen?Math.round(mins):null;
+}
+
+function convertFielddProducts(data){
+  const out=[]; let recurring=0, noPrice=0, noCost=0;
+  for(const r of data){
+    const name=cl(r['Package Name']||r['Add-on Name']||r['Name']);
+    if(!name) continue;
+    const price=cleanPrice(r['Price']);
+    if(price===null) noPrice++;
+    const cost=cleanPrice(r['Internal Cost']);
+    if(cost===null) noCost++;
+    let desc=tidyDesc(r['Description']);
+    // Fieldd's recurring flag is how the shop marks a subscription plan. Urable
+    // models that separately, so say so on the service rather than lose it.
+    if(cl(r['Recurring']).toUpperCase()==='ON'){
+      desc=[desc,'Recurring service in the previous system \u2014 set up as a subscription in Urable'].filter(Boolean).join(' | ');
+      recurring++;
+    }
+    const tax=cl(r['Taxable']).toUpperCase();
+    const row=['service',cl(r['Category']),name,desc,'',
+      fmtPrice(price===null?0:price),
+      cost===null?'':fmtPrice(cost),
+      tax?((tax==='ON'||tax==='TRUE'||tax==='YES')?'true':'false'):'true','',''];
+    // Service Time is the labour, not Total Duration (which adds travel) and not
+    // Advertised Duration (what the customer is quoted). Rides alongside the row:
+    // the Urable CSV template has no duration column, the API does.
+    const mins=fielddMinutes(r['Service Time']||r['Time']);
+    if(mins!=null) row.duration=mins;
+    out.push(row);
+  }
+  out._recurring=recurring; out._noPrice=noPrice; out._noCost=noCost;
+  return out;
+}
+
 function convertHCPPricebook(data){
   // Housecall Pro pricebook export. Some exports scatter description bullets
   // onto their own rows (text lands in the first column) — attach to previous.
@@ -1826,11 +1874,13 @@ function detectProductPlatform(filename, headers){
   if(fn.includes('pricebook')||h.includes('industry_uuid')) return 'hcp';
   if(h.includes('variation name')&&h.includes('item type')) return 'squarecat';
   if(h.includes('unit price')&&h.includes('bookable')) return 'jobberprod';
+  // Fieldd: packages sheet and add-ons sheet share 'internal cost'
+  if(h.includes('internal cost')&&(h.includes('package name')||h.includes('add-on name'))) return 'fielddprod';
   // Two-dimension variant sheets: name + explanation/variant tier + price
   if(h.includes('explanation')&&h.includes('price')) return 'namevariant';
   // Generic services sheet: a name-ish + price-ish column pair
   const hs=headers.map(x=>cl(x).toLowerCase());
-  const nameCol=hs.find(x=>x==='service name'||x==='service'||x==='item name'||x==='name');
+  const nameCol=hs.find(x=>x==='service name'||x==='service'||x==='item name'||x==='name'||x==='package name'||x==='add-on name'||x==='product name');
   const priceCol=hs.find(x=>x==='pricing'||x==='price'||x==='rate'||x==='cost'||x==='unit price');
   if(nameCol&&priceCol) return 'genericprod';
   return null;
@@ -1962,6 +2012,7 @@ function processRaw(raw, filename){
         else if(prodPlatform==='squarecat') rows=convertSquareCatalog(rawObjRows);
         else if(prodPlatform==='jobberprod') rows=convertJobberProducts(rawObjRows);
         else if(prodPlatform==='namevariant') rows=convertNameVariantPrice(rawObjRows);
+        else if(prodPlatform==='fielddprod') rows=convertFielddProducts(rawObjRows);
         else {
           const hs=headerRow.map(x=>cl(x));
           const findCol=cands=>hs.find(x=>cands.includes(x.toLowerCase()))||'';
@@ -1977,7 +2028,7 @@ function processRaw(raw, filename){
       if(!rows.length){ showError('No products/services found in this file.'); return; }
       currentKind='products';
       convertedRows=rows;
-      const pn={'hcp':'Housecall Pro pricebook','genericprod':'Services list','urableprod':'Urable products export','urabletemplate':'Urable products template','squarecat':'Square catalog','jobberprod':'Jobber products','namevariant':'Services list (tiered)'};
+      const pn={'hcp':'Housecall Pro pricebook','genericprod':'Services list','urableprod':'Urable products export','urabletemplate':'Urable products template','squarecat':'Square catalog','jobberprod':'Jobber products','namevariant':'Services list (tiered)','fielddprod':'Fieldd catalog'};
       sourcePlatformName=pn[prodPlatform];
       document.getElementById('originName').textContent=sourcePlatformName;
       fillCategories(rows);
@@ -1985,6 +2036,8 @@ function processRaw(raw, filename){
       // has to know before it starts writing jobs against it.
       const gaps=[];
       if(rows._zeroPoints) gaps.push(rows._zeroPoints+' price'+(rows._zeroPoints===1?'':'s')+' at $0.00 to fill in, across '+rows._zeroServices+' service'+(rows._zeroServices===1?'':'s'));
+      if(rows._noPrice) gaps.push(rows._noPrice+' with no price \u2014 imported at $0.00');
+      if(rows._recurring) gaps.push(rows._recurring+' marked recurring \u2014 set up as subscriptions in Urable');
       if(rows._defaulted===rows.length) gaps.push('no categories in the export \u2014 all filed under \u201c'+DEFAULT_PRODUCT_CATEGORY+'\u201d');
       else if(rows._defaulted) gaps.push(rows._defaulted+' without a category \u2014 filed under \u201c'+DEFAULT_PRODUCT_CATEGORY+'\u201d');
       showDetected(pn[prodPlatform], rows.length, 0, gaps.join(' · '));
@@ -2352,6 +2405,8 @@ function rowToProductPayload(row){
   // The API requires a category on every product (undocumented) — fall back
   p.categoryName=category||DEFAULT_PRODUCT_CATEGORY;
   p.taxable=String(taxable).toLowerCase()==='true';
+  // Carried beside the row, not in it: the CSV template has no duration column
+  if(row.duration!=null&&isFinite(row.duration)) p.duration=row.duration;
   const labelArr=cl(labels)?labels.split(';').map(s=>s.trim()):[];
   const priceArr=cl(prices)?prices.split(';').map(s=>s.trim()):[];
   const costArr=cl(costs)?costs.split(';').map(s=>s.trim()):[];
