@@ -107,10 +107,10 @@ tbody tr:last-child td{border-bottom:none}
     <p class="sub">Switching from another platform? Drop your customer list below. We'll detect the format, clean it up, remove duplicates, and get it ready for your Urable account &mdash; no technical setup needed.</p>
 
     <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
-      <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" onchange="handleFile(this.files[0],'customers')">
+      <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" multiple onchange="handleFiles(this.files,'customers')">
       <div class="drop-icon">&#8679;</div>
       <div class="drop-title">Drop your customer export here</div>
-      <div class="drop-hint">or click to browse &nbsp;&middot;&nbsp; .csv and .xlsx supported</div>
+      <div class="drop-hint">or click to browse &nbsp;&middot;&nbsp; .csv and .xlsx supported &nbsp;&middot;&nbsp; Shopmonkey: drop the customer, fleet and vehicle files together</div>
       <div class="platforms">
         <span class="platform-tag">Jobber</span>
         <span class="platform-tag">Shopmonkey</span>
@@ -523,6 +523,15 @@ function dedup(rows){
       winner[11]=mergeSeg(winner[11],loser[11]);
       base=winner;
     }
+    // The Item column merges as text above, but the structured vehicle records
+    // live on the row object and would be dropped by the array copies. Carry
+    // every member's vehicles across, keyed on VIN so a merge can't double one.
+    const vs=[], seenV=new Set();
+    for(const i of idxs) for(const v of (rows[i].vehicles||[])){
+      const k=(v.vin||'')+'|'+(v.name||'');
+      if(!seenV.has(k)){ seenV.add(k); vs.push(v); }
+    }
+    if(vs.length) base.vehicles=vs;
     out.push(ensureFirstName(base));
   }
   return out;
@@ -1026,6 +1035,163 @@ function convertJobsExport(data){
     out.push([first,last,'Person','','','','','','',g.phone,g.email,np.join(' | '),'']);
   }
   return dedup(out);
+}
+
+// ─── Shopmonkey: three sheets, one shop ─────────────────────────────────────
+// customers (people) + fleet (businesses) + vehicles, joined on Shopmonkey IDs.
+// Every sheet carries a two-row preamble ("Generation Date"), so the real
+// headers are not on row 1.
+function smHeaderRow(raw){
+  for(let i=0;i<Math.min(8,raw.length);i++){
+    const r=(raw[i]||[]).map(cl);
+    if(r.some(h=>/^(first name\*|company name\*|owners \(optional\)|year\*)$/i.test(h))) return i;
+  }
+  return -1;
+}
+function smKind(raw){
+  const i=smHeaderRow(raw);
+  if(i<0) return null;
+  const h=(raw[i]||[]).map(x=>cl(x).toLowerCase());
+  const has=p=>h.some(x=>x.startsWith(p));
+  if(has('owners ids')||has('owners (optional)')||(has('year*')&&has('make*'))) return 'vehicles';
+  if(has('company name*')) return 'fleet';
+  if(has('first name*')) return 'customers';
+  return null;
+}
+// header-name lookup, so a reordered export doesn't silently shift every column
+function smTable(raw){
+  const i=smHeaderRow(raw);
+  const head=(raw[i]||[]).map(cl);
+  const at=name=>head.findIndex(x=>x.toLowerCase().startsWith(name));
+  const body=raw.slice(i+1).filter(r=>(r||[]).some(v=>cl(v)));
+  return {at, body, get:(row,name)=>{const j=at(name);return j<0?'':cl(row[j]);}};
+}
+
+function convertShopmonkeyBundle(parts){
+  const rows=[], byId=new Map();
+  const stats={people:0,businesses:0,vehicles:0,orphanVehicles:0,unresolved:0,shared:0,noVehicle:0};
+  const fixCountry=v=>{const c=cl(v).toUpperCase();return (c==='US'||c==='USA')?'United States':(c==='CA'?'Canada':cl(v));};
+
+  const addRow=(row,id)=>{ row.vehicles=[]; rows.push(row); if(id) byId.set(id,row); };
+
+  if(parts.customers){
+    const t=smTable(parts.customers);
+    for(const r of t.body){
+      const first=t.get(r,'first name'), last=t.get(r,'last name');
+      if(!first&&!last) continue;
+      const company=t.get(r,'company name');
+      const np=[];
+      const note=t.get(r,'note'), ref=t.get(r,'referral source');
+      const pay=t.get(r,'payment term'), dot=t.get(r,'dot'), created=t.get(r,'date created');
+      const ph2=t.get(r,'additional phones'), em2=t.get(r,'additional emails');
+      const pref=t.get(r,'preferred contact');
+      if(note) np.push(note);
+      if(company) np.push('Company: '+company);
+      if(ref) np.push('Referral: '+ref);
+      if(pref&&pref.toLowerCase()!=='all') np.push('Prefers: '+pref);
+      if(ph2) np.push('Alt phone: '+ph2);
+      if(em2) np.push('Alt email: '+em2);
+      if(pay) np.push('Payment Term: '+pay);
+      if(dot) np.push('DOT#: '+dot);
+      if(created) np.push('Customer since: '+created);
+      const row=[first,last,company?'Business':'Person',
+        t.get(r,'address 1'),t.get(r,'address 2'),t.get(r,'city'),t.get(r,'state'),
+        t.get(r,'zip'),fixCountry(t.get(r,'country')),
+        usPhone(t.get(r,'primary phone')),cleanEmail(t.get(r,'primary email')),
+        np.join(' | '),''];
+      addRow(row, t.get(r,'shopmonkey customer id'));
+      stats.people++;
+    }
+  }
+  if(parts.fleet){
+    const t=smTable(parts.fleet);
+    for(const r of t.body){
+      const name=t.get(r,'company name');
+      if(!name) continue;
+      const np=[];
+      const note=t.get(r,'note'), ref=t.get(r,'referral source');
+      const pay=t.get(r,'payment term'), dot=t.get(r,'dot'), created=t.get(r,'date created');
+      const ph2=t.get(r,'additional phones'), em2=t.get(r,'additional emails');
+      if(note) np.push(note);
+      if(ref) np.push('Referral: '+ref);
+      if(ph2) np.push('Alt phone: '+ph2);
+      if(em2) np.push('Alt email: '+em2);
+      if(pay) np.push('Payment Term: '+pay);
+      if(dot) np.push('DOT#: '+dot);
+      if(created) np.push('Customer since: '+created);
+      const row=[name,'','Business',
+        t.get(r,'address 1'),t.get(r,'address 2'),t.get(r,'city'),t.get(r,'state'),
+        t.get(r,'zip'),fixCountry(t.get(r,'country')),
+        usPhone(t.get(r,'primary phone')),cleanEmail(t.get(r,'primary email')),
+        np.join(' | '),''];
+      addRow(row, t.get(r,'shopmonkey fleet id'));
+      stats.businesses++;
+    }
+  }
+  if(parts.vehicles){
+    const t=smTable(parts.vehicles);
+    for(const r of t.body){
+      const year=t.get(r,'year'), make=t.get(r,'make'), model=t.get(r,'model');
+      const name=[year,make,model].filter(Boolean).join(' ');
+      if(!name) continue;
+      const ids=t.get(r,'owners ids').split(',').map(x=>x.trim()).filter(Boolean);
+      const owners=ids.map(id=>byId.get(id)).filter(Boolean);
+      if(!ids.length){ stats.orphanVehicles++; continue; }
+      if(!owners.length){ stats.unresolved++; continue; }
+      if(owners.length>1) stats.shared++;
+      const mileage=t.get(r,'mileage').replace(/[^0-9]/g,'');
+      // The whole vehicle record, not just a label: the API's item model takes
+      // vin, plate, colour and mileage, and a migration that drops them makes
+      // the shop retype 2,600 VINs.
+      const v={name:name, type:'automotive', year:year, make:make, model:model,
+        subType:t.get(r,'sub-model'), bodyStyle:t.get(r,'type'),
+        color:t.get(r,'color'), vin:t.get(r,'vin').toUpperCase(),
+        licensePlate:t.get(r,'license plate'),
+        mileage:mileage?Number(mileage):'', unit:t.get(r,'unit'), notes:t.get(r,'note')};
+      for(const o of owners){ o.vehicles.push(v); stats.vehicles++; }
+    }
+  }
+  // Item column keeps the readable names for the CSV path; the structured
+  // records ride alongside for the API path.
+  for(const row of rows){
+    if(row.vehicles.length) row[12]=row.vehicles.map(v=>v.name).join(' | ');
+    else stats.noVehicle++;
+  }
+  const out=dedup(rows);
+  out._sm=stats;
+  return out;
+}
+
+function processBundle(parts, kind){
+  hideError();
+  if(kind&&kind!=='customers'){
+    showError('Multiple files are only supported in the customers box, where a customer / fleet / vehicle set is joined together.');
+    return;
+  }
+  const found={};
+  for(const p of parts){ const k=smKind(p.raw); if(k&&!found[k]) found[k]=p.raw; }
+  if(!found.customers&&!found.fleet){
+    showError('Dropped '+parts.length+' files but could not find a Shopmonkey customer or fleet export among them. Drop one file at a time for any other format.');
+    return;
+  }
+  let rows;
+  try{ rows=convertShopmonkeyBundle(found); }
+  catch(err){ showError('Conversion error: '+err.message); return; }
+  if(!rows.length){ showError('No customers found in these files.'); return; }
+  currentKind='customers';
+  convertedRows=rows;
+  currentFilename=parts.map(p=>p.name).join(' + ');
+  sourcePlatformName='Shopmonkey';
+  document.getElementById('originName').textContent=sourcePlatformName;
+  const st=rows._sm||{};
+  const bits=[];
+  if(st.vehicles) bits.push(st.vehicles.toLocaleString()+' vehicles attached');
+  if(st.shared) bits.push(st.shared+' on two owners');
+  if(st.orphanVehicles) bits.push(st.orphanVehicles+' vehicles with no owner (left out)');
+  if(st.unresolved) bits.push(st.unresolved+' vehicles whose owner is not in these files');
+  showDetected('Shopmonkey ('+Object.keys(found).join(' + ')+')', rows.length, 0, bits.join(' · '));
+  showPreview(rows);
+  setImportModeUI();
 }
 
 function convertShopmonkeyFleet(data){
@@ -1896,58 +2062,64 @@ let convertedRows=[], currentFilename='', sourcePlatformName='previous system';
 let rawObjRows=[], rawHeaders=[];   // kept for the manual mapper
 let expectedKind='customers';       // which drop zone the file came from
 
+// Reading a file and interpreting it are two jobs. Split them so a bundle of
+// files can be read together and only interpreted once they are all in hand.
+function readRows(file){
+  return new Promise((resolve,reject)=>{
+    const ext=file.name.split('.').pop().toLowerCase();
+    const rd=new FileReader();
+    rd.onerror=()=>reject(new Error('could not read '+file.name));
+    if(ext==='xlsx'||ext==='xls'){
+      rd.onload=e=>{
+        try{
+          const wb=XLSX.read(e.target.result,{type:'array'});
+          const ws=wb.Sheets[wb.SheetNames[0]];
+          // Some exports declare a bogus single-cell dimension (!ref="A1")
+          // which hides every row — recompute the true range from actual cells.
+          (function fixRange(){
+            const cells=Object.keys(ws).filter(k=>/^[A-Z]+\d+$/.test(k));
+            if(!cells.length) return;
+            let maxR=0,maxC=0;
+            for(const a of cells){const d=XLSX.utils.decode_cell(a);if(d.r>maxR)maxR=d.r;if(d.c>maxC)maxC=d.c;}
+            ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:maxR,c:maxC}});
+          })();
+          resolve(XLSX.utils.sheet_to_json(ws,{header:1,defval:''}));
+        }catch(err){ reject(new Error('Could not read XLSX file: '+err.message)); }
+      };
+      rd.readAsArrayBuffer(file);
+    } else {
+      const lname=file.name.toLowerCase();
+      const forceLatin=lname.includes('cust_list')||lname.includes('ebms');
+      rd.onload=e=>{
+        let text=new TextDecoder(forceLatin?'windows-1252':'utf-8').decode(e.target.result);
+        // a replacement char means the utf-8 guess was wrong
+        if(!forceLatin&&text.includes('\ufffd')) text=new TextDecoder('windows-1252').decode(e.target.result);
+        resolve(Papa.parse(text,{header:false,skipEmptyLines:false}).data);
+      };
+      rd.readAsArrayBuffer(file);
+    }
+  });
+}
+
 function handleFile(file, kind){
   if(!file) return;
   expectedKind=kind||'customers';
   currentFilename=file.name;
-  let ext=file.name.split('.').pop().toLowerCase();
-  if(ext==='xlsx'||ext==='xls'){
-    let reader=new FileReader();
-    reader.onload=e=>{
-      try{
-        let wb=XLSX.read(e.target.result,{type:'array'});
-        let ws=wb.Sheets[wb.SheetNames[0]];
-        // Some exports declare a bogus single-cell dimension (!ref="A1")
-        // which hides every row — recompute the true range from actual cells.
-        (function fixRange(){
-          const cells=Object.keys(ws).filter(k=>/^[A-Z]+\d+$/.test(k));
-          if(!cells.length) return;
-          let maxR=0,maxC=0;
-          for(const a of cells){const d=XLSX.utils.decode_cell(a);if(d.r>maxR)maxR=d.r;if(d.c>maxC)maxC=d.c;}
-          ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:maxR,c:maxC}});
-        })();
-        let raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
-        processRaw(raw, file.name);
-      }catch(err){ showError('Could not read XLSX file: '+err.message); }
-    };
-    reader.readAsArrayBuffer(file);
-  } else {
-    let lname=file.name.toLowerCase();
-    let useLatin=lname.includes('cust_list')||lname.includes('ebms');
-    if(useLatin){
-      let r2=new FileReader();
-      r2.onload=e2=>{
-        let dec=new TextDecoder('windows-1252');
-        let text=dec.decode(e2.target.result);
-        let result=Papa.parse(text,{header:false,skipEmptyLines:false});
-        processRaw(result.data,file.name);
-      };
-      r2.readAsArrayBuffer(file);
-    } else {
-      // Read as bytes and pick the encoding: UTF-8 first, but if the decode
-      // produced replacement chars (�), the file is likely windows-1252
-      let reader=new FileReader();
-      reader.onload=e=>{
-        let text=new TextDecoder('utf-8').decode(e.target.result);
-        if(text.includes('�')){
-          text=new TextDecoder('windows-1252').decode(e.target.result);
-        }
-        let result=Papa.parse(text,{header:false,skipEmptyLines:false});
-        processRaw(result.data,file.name);
-      };
-      reader.readAsArrayBuffer(file);
-    }
-  }
+  readRows(file).then(raw=>processRaw(raw,file.name)).catch(err=>showError(err.message));
+}
+
+// Some systems only make sense as a set of files. Shopmonkey is the first:
+// customers, fleet and vehicles are three sheets joined on Shopmonkey IDs, and
+// imported one at a time every vehicle is lost — the vehicle sheet carries no
+// contact details and neither customer sheet carries a vehicle.
+function handleFiles(list, kind){
+  const files=[...(list||[])];
+  if(!files.length) return;
+  if(files.length===1) return handleFile(files[0],kind);
+  expectedKind=kind||'customers';
+  Promise.all(files.map(f=>readRows(f).then(raw=>({name:f.name,raw}))))
+    .then(parts=>processBundle(parts,kind))
+    .catch(err=>showError(err.message));
 }
 
 function processRaw(raw, filename){
@@ -3855,14 +4027,25 @@ async function startImport(){
           created++;
           const custId=r.body.data&&(r.body.data.id||r.body.data);
           // Vehicles → Items
-          if(doVehicles&&custId&&cl(row[12])){
-            for(const v of row[12].split(' | ')){
-              const name=cl(v);
-              if(!name) continue;
-              const ir=await apiFetch('/v1/items',{method:'POST',
-                body:JSON.stringify({customerId:custId, name:name, type:'automotive', industry:selectedIndustry()})},key);
+          if(doVehicles&&custId){
+            // A source that gives us the whole vehicle record (Shopmonkey does)
+            // hands it over structured; everything else still arrives as names
+            // in the Item column.
+            const list=(row.vehicles&&row.vehicles.length)?row.vehicles
+              :(cl(row[12])?row[12].split(' | ').map(n=>({name:cl(n)})).filter(v=>v.name):[]);
+            for(const v of list){
+              if(!v.name) continue;
+              const body={customerId:custId, name:v.name, type:v.type||'automotive', industry:selectedIndustry()};
+              for(const f of ['year','make','model','color','vin','licensePlate','subType']){
+                if(cl(v[f])) body[f]=cl(v[f]);
+              }
+              if(v.mileage!==''&&v.mileage!=null&&isFinite(v.mileage)&&Number(v.mileage)>0) body.mileage=Number(v.mileage);
+              const vn=[cl(v.bodyStyle)?'Body style: '+cl(v.bodyStyle):'',
+                        cl(v.unit)?'Unit #: '+cl(v.unit):'', cl(v.notes)].filter(Boolean).join(' | ');
+              if(vn) body.notes=vn;
+              const ir=await apiFetch('/v1/items',{method:'POST',body:JSON.stringify(body)},key);
               if(ir.ok) vehiclesCreated++;
-              else addError(label+' — vehicle "'+name+'"', (ir.body&&ir.body.error)||('HTTP '+ir.status));
+              else addError(label+' — vehicle "'+v.name+'"', (ir.body&&ir.body.error)||('HTTP '+ir.status));
             }
           }
         } else {
@@ -3945,7 +4128,9 @@ for(const [id,kind] of [['dropZone','customers'],['dropZoneP','products'],['drop
   dz.addEventListener('drop',e=>{
     e.preventDefault();
     dz.classList.remove('drag-over');
-    if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0],kind);
+    const dropped=e.dataTransfer.files;
+    if(!dropped||!dropped.length) return;
+    if(kind==='customers') handleFiles(dropped,kind); else handleFile(dropped[0],kind);
   });
 }
 
