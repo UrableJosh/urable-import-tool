@@ -1067,6 +1067,13 @@ function smTable(raw){
   return {at, body, get:(row,name)=>{const j=at(name);return j<0?'':cl(row[j]);}};
 }
 
+// Billing a tax-exempt customer tax is a real problem, and Urable's template
+// has no column for it — so it goes in Notes loudly rather than quietly nowhere.
+function smTaxExempt(t,r){
+  return ['tax exempt','gst exempt','hst exempt','pst exempt']
+    .some(k=>/^(true|yes|1)$/i.test(t.get(r,k)));
+}
+
 function convertShopmonkeyBundle(parts){
   const rows=[], byId=new Map();
   const stats={people:0,businesses:0,vehicles:0,orphanVehicles:0,unresolved:0,shared:0,noVehicle:0};
@@ -1093,6 +1100,7 @@ function convertShopmonkeyBundle(parts){
       if(em2) np.push('Alt email: '+em2);
       if(pay) np.push('Payment Term: '+pay);
       if(dot) np.push('DOT#: '+dot);
+      if(smTaxExempt(t,r)) np.push('TAX EXEMPT in the previous system');
       if(created) np.push('Customer since: '+created);
       const row=[first,last,company?'Business':'Person',
         t.get(r,'address 1'),t.get(r,'address 2'),t.get(r,'city'),t.get(r,'state'),
@@ -1112,12 +1120,15 @@ function convertShopmonkeyBundle(parts){
       const note=t.get(r,'note'), ref=t.get(r,'referral source');
       const pay=t.get(r,'payment term'), dot=t.get(r,'dot'), created=t.get(r,'date created');
       const ph2=t.get(r,'additional phones'), em2=t.get(r,'additional emails');
+      const pref=t.get(r,'preferred contact');
       if(note) np.push(note);
       if(ref) np.push('Referral: '+ref);
+      if(pref&&pref.toLowerCase()!=='all') np.push('Prefers: '+pref);
       if(ph2) np.push('Alt phone: '+ph2);
       if(em2) np.push('Alt email: '+em2);
       if(pay) np.push('Payment Term: '+pay);
       if(dot) np.push('DOT#: '+dot);
+      if(smTaxExempt(t,r)) np.push('TAX EXEMPT in the previous system');
       if(created) np.push('Customer since: '+created);
       const row=[name,'','Business',
         t.get(r,'address 1'),t.get(r,'address 2'),t.get(r,'city'),t.get(r,'state'),
@@ -1147,7 +1158,10 @@ function convertShopmonkeyBundle(parts){
         subType:t.get(r,'sub-model'), bodyStyle:t.get(r,'type'),
         color:t.get(r,'color'), vin:t.get(r,'vin').toUpperCase(),
         licensePlate:t.get(r,'license plate'),
-        mileage:mileage?Number(mileage):'', unit:t.get(r,'unit'), notes:t.get(r,'note')};
+        mileage:mileage?Number(mileage):'', mileageUnit:t.get(r,'mileage unit'),
+        engine:t.get(r,'engine size'), transmission:t.get(r,'transmission'),
+        drivetrain:t.get(r,'drivetrain'),
+        unit:t.get(r,'unit'), notes:t.get(r,'note')};
       for(const o of owners){ o.vehicles.push(v); stats.vehicles++; }
     }
   }
@@ -4054,7 +4068,10 @@ async function startImport(){
               const mi=(v.mileage===''||v.mileage==null)?null:Number(v.mileage);
               const vn=[cl(v.subType)?'Trim: '+cl(v.subType):'',
                         cl(v.color)?'Color: '+cl(v.color):'',
-                        (mi&&isFinite(mi)&&mi>0)?'Mileage: '+mi.toLocaleString():'',
+                        (mi&&isFinite(mi)&&mi>0)?'Mileage: '+mi.toLocaleString()+(cl(v.mileageUnit)?' '+cl(v.mileageUnit).toLowerCase()+'s':''):'',
+                        cl(v.engine)?'Engine: '+cl(v.engine):'',
+                        cl(v.transmission)?'Transmission: '+cl(v.transmission):'',
+                        cl(v.drivetrain)?'Drivetrain: '+cl(v.drivetrain):'',
                         cl(v.bodyStyle)?'Body style: '+cl(v.bodyStyle):'',
                         cl(v.unit)?'Unit #: '+cl(v.unit):'', cl(v.notes)].filter(Boolean).join(' | ');
               if(vn) body.notes=vn;
