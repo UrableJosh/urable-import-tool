@@ -2410,8 +2410,6 @@ function rowToProductPayload(row){
   // The API requires a category on every product (undocumented) — fall back
   p.categoryName=category||DEFAULT_PRODUCT_CATEGORY;
   p.taxable=String(taxable).toLowerCase()==='true';
-  // Carried beside the row, not in it: the CSV template has no duration column
-  if(row.duration!=null&&isFinite(row.duration)) p.duration=row.duration;
   const labelArr=cl(labels)?labels.split(';').map(s=>s.trim()):[];
   const priceArr=cl(prices)?prices.split(';').map(s=>s.trim()):[];
   const costArr=cl(costs)?costs.split(';').map(s=>s.trim()):[];
@@ -2421,6 +2419,11 @@ function rowToProductPayload(row){
     if(labelArr[i]) pr.label=labelArr[i];
     const c=cleanPrice(costArr[i]||'');
     if(c!==null) pr.cost=Math.round(c*100);
+    // Estimated Duration hangs off the PRICE POINT, not the product, and the
+    // API stores it in milliseconds — confirmed against dev, where 4h07m set by
+    // hand in the app came back as prices[0].duration = 14820000. Sending it at
+    // the product level (or in minutes) is silently ignored.
+    if(row.duration!=null&&isFinite(row.duration)) pr.duration=Math.round(row.duration*60000);
     return pr;
   }).filter(pr=>!isNaN(pr.value));
   return p;
