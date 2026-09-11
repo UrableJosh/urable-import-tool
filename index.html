@@ -1158,6 +1158,13 @@ function convertShopmonkeyBundle(parts){
     else stats.noVehicle++;
   }
   const out=dedup(rows);
+  // Count what survives, not what was linked. Merging two customer records
+  // merges their vehicles too, and identical ones collapse on VIN — reporting
+  // the pre-merge number promises more vehicles than the import creates.
+  const linked=stats.vehicles;
+  stats.vehicles=out.reduce((a,r)=>a+((r.vehicles||[]).length),0);
+  stats.mergedVehicles=linked-stats.vehicles;
+  stats.mergedCustomers=rows.length-out.length;
   out._sm=stats;
   return out;
 }
@@ -1186,6 +1193,7 @@ function processBundle(parts, kind){
   const st=rows._sm||{};
   const bits=[];
   if(st.vehicles) bits.push(st.vehicles.toLocaleString()+' vehicles attached');
+  if(st.mergedCustomers) bits.push(st.mergedCustomers+' duplicate customer'+(st.mergedCustomers===1?'':'s')+' merged'+(st.mergedVehicles?' ('+st.mergedVehicles+' repeated vehicles collapsed)':''));
   if(st.shared) bits.push(st.shared+' on two owners');
   if(st.orphanVehicles) bits.push(st.orphanVehicles+' vehicles with no owner (left out)');
   if(st.unresolved) bits.push(st.unresolved+' vehicles whose owner is not in these files');
