@@ -4020,7 +4020,7 @@ async function startImport(){
   // silently duplicated the whole file. Scan here for the same reason.
   const nrm=v=>String(v||'').trim().toLowerCase().replace(/\s+/g,' ');
   const digits=v=>{const d=String(v||'').replace(/\D/g,'');return d.length===11&&d[0]==='1'?d.slice(1):d;};
-  const seenIdx={};
+  const seenIdx={}, nameOnlyIdx={}, nameCount={};
   async function scanExisting(){
     let out=[],startAfter='';
     const path=isProd?'products':'customers';
@@ -4042,9 +4042,17 @@ async function startImport(){
         // same rule the jobs import uses: an identifier alone is not enough,
         // because households share a phone — the name has to agree too
         const nm=nrm((rec.firstName||'')+' '+(rec.lastName||''));
-        for(const p of (rec.phoneNumbers||[])){ const d=digits(p.value); if(d) seenIdx[d+'|'+nm]=rec.id; }
-        for(const e of (rec.emails||[])){ const v=nrm(e.value); if(v) seenIdx[v+'|'+nm]=rec.id; }
-        if(nm) seenIdx['|'+nm]=rec.id;
+        const phones=(rec.phoneNumbers||[]).map(p=>digits(p.value)).filter(Boolean);
+        const emails=(rec.emails||[]).map(e=>nrm(e.value)).filter(Boolean);
+        for(const d of phones) seenIdx[d+'|'+nm]=rec.id;
+        for(const v of emails) seenIdx[v+'|'+nm]=rec.id;
+        if(nm){
+          // Name-only is the last resort, and only safe while the name is
+          // unique in the account. Count every holder of it so an ambiguous
+          // name can be refused rather than guessed at.
+          nameCount[nm]=(nameCount[nm]||0)+1;
+          if(!phones.length&&!emails.length) nameOnlyIdx[nm]=rec.id;
+        }
       }
     }
     if(out.length) logLine('Found '+out.length.toLocaleString()+' existing '+(isProd?'service':'customer')+'(s) in the account — matching rows will be skipped, not duplicated.');
@@ -4089,7 +4097,18 @@ async function startImport(){
     // HEADERS: 0 First, 1 Last … 9 Phone Number, 10 Email
     const ph=digits(row[9]||'');
     const em=nrm(row[10]||'');
-    return seenIdx[ph+'|'+nm]||seenIdx[em+'|'+nm]||seenIdx['|'+nm]||null;
+    if(ph&&seenIdx[ph+'|'+nm]) return seenIdx[ph+'|'+nm];
+    if(em&&seenIdx[em+'|'+nm]) return seenIdx[em+'|'+nm];
+    // Matching on a name alone used to be the final fallback, and it is wrong
+    // whenever two real people share one: three different Carlos Ruizes, three
+    // different phone numbers, in a single 2,746-customer shop. Treating them
+    // as one skipped two real customers and — now that a matched customer gets
+    // their missing vehicles — would have parked one man's truck on another's
+    // record. Only accept a bare name when neither side has anything better
+    // and nobody else in the account answers to it.
+    if(ph||em) return null;
+    if(nameCount[nm]>1) return null;
+    return nameOnlyIdx[nm]||null;
   }
   function alreadyThere(row){ return !!matchedId(row); }
 
