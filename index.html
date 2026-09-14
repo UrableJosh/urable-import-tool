@@ -3956,7 +3956,7 @@ async function startImport(){
   // Modest concurrency: 4 at a time keeps us far under the 2,500/min limit
   const CONCURRENCY=4;
   let idx=0;
-  let matchedExisting=0;
+  let matchedExisting=0, vehiclesBackfilled=0;
 
   // ── Re-running must be safe ────────────────────────────────────────────
   // The jobs import has always scanned the account first and skipped records
@@ -3994,16 +3994,79 @@ async function startImport(){
     }
     if(out.length) logLine('Found '+out.length.toLocaleString()+' existing '+(isProd?'service':'customer')+'(s) in the account — matching rows will be skipped, not duplicated.');
   }
-  function alreadyThere(row){
-    if(isProd) return !!seenIdx['p|'+matchKey(row[2]||'')];
+  // One place that decides what a vehicle record is, and one place that writes
+  // it — used both when the customer is new and when they were already here.
+  function vehiclesFor(row){
+    // A source that hands over the whole vehicle record (Shopmonkey does) uses
+    // the structured list; everything else still arrives as names in Item.
+    return (row.vehicles&&row.vehicles.length)?row.vehicles
+      :(cl(row[12])?row[12].split(' | ').map(n=>({name:cl(n)})).filter(v=>v.name):[]);
+  }
+  async function createVehicle(custId,v,label){
+    if(!v||!cl(v.name)) return false;
+    const body={customerId:custId, name:cl(v.name), type:v.type||'automotive', industry:selectedIndustry()};
+    // Only the PLURAL array spellings survive a write. Verified on dev:
+    // vins/licensePlates land in metadata, while vin, licensePlate, year, make,
+    // model, trim, color — and a whole metadata object, on POST or PATCH — are
+    // accepted with a 200 and silently discarded. The rest goes in notes.
+    if(cl(v.vin)) body.vins=[cl(v.vin).toUpperCase()];
+    if(cl(v.licensePlate)) body.licensePlates=[cl(v.licensePlate)];
+    const mi=(v.mileage===''||v.mileage==null)?null:Number(v.mileage);
+    const vn=[cl(v.subType)?'Trim: '+cl(v.subType):'',
+              cl(v.color)?'Color: '+cl(v.color):'',
+              (mi&&isFinite(mi)&&mi>0)?'Mileage: '+mi.toLocaleString()+(cl(v.mileageUnit)?' '+cl(v.mileageUnit).toLowerCase()+'s':''):'',
+              cl(v.engine)?'Engine: '+cl(v.engine):'',
+              cl(v.transmission)?'Transmission: '+cl(v.transmission):'',
+              cl(v.drivetrain)?'Drivetrain: '+cl(v.drivetrain):'',
+              cl(v.bodyStyle)?'Body style: '+cl(v.bodyStyle):'',
+              cl(v.unit)?'Unit #: '+cl(v.unit):'', cl(v.notes)].filter(Boolean).join(' | ');
+    if(vn) body.notes=vn;
+    const ir=await apiFetch('/v1/items',{method:'POST',body:JSON.stringify(body)},key);
+    if(ir.ok) return true;
+    addError(label+' — vehicle "'+cl(v.name)+'"', (ir.body&&ir.body.error)||('HTTP '+ir.status));
+    return false;
+  }
+
+  function matchedId(row){
+    if(isProd) return seenIdx['p|'+matchKey(row[2]||'')]||null;
     const nm=nrm((row[0]||'')+' '+(row[1]||''));
-    if(!nm) return false;
+    if(!nm) return null;
     // HEADERS: 0 First, 1 Last … 9 Phone Number, 10 Email
     const ph=digits(row[9]||'');
     const em=nrm(row[10]||'');
-    return !!(seenIdx[ph+'|'+nm]||seenIdx[em+'|'+nm]||seenIdx['|'+nm]);
+    return seenIdx[ph+'|'+nm]||seenIdx[em+'|'+nm]||seenIdx['|'+nm]||null;
+  }
+  function alreadyThere(row){ return !!matchedId(row); }
+
+  // A vehicle that failed on a previous run — a timeout, a dropped connection —
+  // used to be unreachable: the second run matched the customer, skipped the
+  // row, and skipped their vehicles with it. Index what each existing customer
+  // already owns so a re-run can add the missing ones. Additive only; nothing
+  // here updates or removes a record anyone already has.
+  const ownedVeh={};
+  async function scanExistingVehicles(){
+    if(isProd||!doVehicles) return;
+    let startAfter='', total=0;
+    for(let guard=0;guard<400;guard++){
+      const r=await apiFetch('/v1/items?limit=100'+(startAfter?'&startAfter='+encodeURIComponent(startAfter):''),{method:'GET'},key);
+      const data=r.ok&&r.body&&r.body.data;
+      if(!data||!data.length) break;
+      for(const it of data){
+        const ref=String(it.customerRef||'');
+        const cid=ref.slice(ref.lastIndexOf('/')+1);
+        if(!cid) continue;
+        const set=ownedVeh[cid]||(ownedVeh[cid]=new Set());
+        for(const v of ((it.metadata&&it.metadata.vins)||[])) if(v) set.add('vin:'+String(v).toUpperCase());
+        if(it.name) set.add('name:'+nrm(it.name));
+        total++;
+      }
+      if(data.length<100) break;
+      startAfter=data[data.length-1].id;
+    }
+    if(total) logLine('Found '+total.toLocaleString()+' vehicle(s) already on those customers — only missing ones will be added.');
   }
   await scanExisting();
+  await scanExistingVehicles();
 
   // Urable mints a category the first time a product names it, and it does not
   // deduplicate concurrent creates — four parallel POSTs naming the same new
@@ -4041,7 +4104,23 @@ async function startImport(){
   async function handleRow(row){
     {
       const label=isProd?(row[2]||'(unnamed service)'):(((row[0]||'')+' '+(row[1]||'')).trim()||'(no name)');
-      if(alreadyThere(row)){ matchedExisting++; return; }
+      const existingId=matchedId(row);
+      if(existingId){
+        matchedExisting++;
+        // The customer stays exactly as they are; only vehicles they do not
+        // already have get created. This is what makes re-running a file that
+        // half-failed actually finish the job.
+        if(doVehicles){
+          const owned=ownedVeh[existingId]||new Set();
+          for(const v of vehiclesFor(row)){
+            const kv=cl(v.vin)?'vin:'+cl(v.vin).toUpperCase():'name:'+nrm(v.name);
+            if(owned.has(kv)||owned.has('name:'+nrm(v.name))) continue;
+            const ok=await createVehicle(existingId,v,label);
+            if(ok){ vehiclesCreated++; vehiclesBackfilled++; owned.add(kv); }
+          }
+        }
+        return;
+      }
       try{
         const payload=isProd?rowToProductPayload(row):rowToCustomerPayload(row, origin);
         const r=await apiFetch(isProd?'/v1/products':'/v1/customers',{method:'POST',body:JSON.stringify(payload)},key);
@@ -4050,34 +4129,8 @@ async function startImport(){
           const custId=r.body.data&&(r.body.data.id||r.body.data);
           // Vehicles → Items
           if(doVehicles&&custId){
-            // A source that gives us the whole vehicle record (Shopmonkey does)
-            // hands it over structured; everything else still arrives as names
-            // in the Item column.
-            const list=(row.vehicles&&row.vehicles.length)?row.vehicles
-              :(cl(row[12])?row[12].split(' | ').map(n=>({name:cl(n)})).filter(v=>v.name):[]);
-            for(const v of list){
-              if(!v.name) continue;
-              const body={customerId:custId, name:v.name, type:v.type||'automotive', industry:selectedIndustry()};
-              // Only the PLURAL array spellings survive a write. Verified on dev:
-              // vins/licensePlates land in metadata, while vin, licensePlate,
-              // year, make, model, trim, color — and a whole metadata object, on
-              // POST or PATCH — are accepted with a 200 and silently discarded.
-              // So everything else goes in notes rather than being lost.
-              if(cl(v.vin)) body.vins=[cl(v.vin).toUpperCase()];
-              if(cl(v.licensePlate)) body.licensePlates=[cl(v.licensePlate)];
-              const mi=(v.mileage===''||v.mileage==null)?null:Number(v.mileage);
-              const vn=[cl(v.subType)?'Trim: '+cl(v.subType):'',
-                        cl(v.color)?'Color: '+cl(v.color):'',
-                        (mi&&isFinite(mi)&&mi>0)?'Mileage: '+mi.toLocaleString()+(cl(v.mileageUnit)?' '+cl(v.mileageUnit).toLowerCase()+'s':''):'',
-                        cl(v.engine)?'Engine: '+cl(v.engine):'',
-                        cl(v.transmission)?'Transmission: '+cl(v.transmission):'',
-                        cl(v.drivetrain)?'Drivetrain: '+cl(v.drivetrain):'',
-                        cl(v.bodyStyle)?'Body style: '+cl(v.bodyStyle):'',
-                        cl(v.unit)?'Unit #: '+cl(v.unit):'', cl(v.notes)].filter(Boolean).join(' | ');
-              if(vn) body.notes=vn;
-              const ir=await apiFetch('/v1/items',{method:'POST',body:JSON.stringify(body)},key);
-              if(ir.ok) vehiclesCreated++;
-              else addError(label+' — vehicle "'+v.name+'"', (ir.body&&ir.body.error)||('HTTP '+ir.status));
+            for(const v of vehiclesFor(row)){
+              if(await createVehicle(custId,v,label)) vehiclesCreated++;
             }
           }
         } else {
@@ -4097,6 +4150,7 @@ async function startImport(){
       document.getElementById('progressText').textContent=
         done.toLocaleString()+' / '+total.toLocaleString()+' processed · '+
         created.toLocaleString()+' created'+(matchedExisting?' · '+matchedExisting+' already there':'')+
+        (vehiclesBackfilled?' · '+vehiclesBackfilled+' vehicles backfilled':'')+
         (vehiclesCreated?' · '+vehiclesCreated+' vehicles':'')+
         (failed?' · '+failed+' failed':'');
     }
@@ -4126,6 +4180,7 @@ async function startImport(){
   sb.innerHTML='<strong>Import complete.</strong> '+created.toLocaleString()+' '+noun+' created'+
     (vehiclesCreated?', '+vehiclesCreated.toLocaleString()+' vehicles added':'')+
     (matchedExisting?' · '+matchedExisting.toLocaleString()+' already in the account (skipped)':'')+
+    (vehiclesBackfilled?' · <strong>'+vehiclesBackfilled.toLocaleString()+'</strong> vehicle(s) added to customers who were already here':'')+
     (failed?', <span style="color:#dc2626">'+failed+' failed</span>.':'.')+
     ' Open your Urable account to verify.'+
     (failed?'<div style="margin-top:8px;font-size:12.5px"><strong>Failure breakdown:</strong><br>'+groupSummary+'</div>':'');
