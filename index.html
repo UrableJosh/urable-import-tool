@@ -1183,21 +1183,63 @@ function convertShopmonkeyBundle(parts){
   return out;
 }
 
+
+// Several customer lists at once — different shops, different systems, or a
+// shop that kept half its book somewhere else. Each file is detected and
+// converted on its own, then the combined set is deduplicated, so a customer
+// who appears in two lists lands as one record with both sets of details.
+function processMixedCustomerFiles(parts){
+  const all=[], used=[], skipped=[];
+  for(const p of parts){
+    const sh=shapeRaw(p.raw);
+    const platform=detectPlatform(p.name, sh.headerRow, sh.raw);
+    if(!platform){ skipped.push(p.name); continue; }
+    let rows=[];
+    try{ rows=convertCustomerRows(platform, sh.raw, sh.objRows); }
+    catch(err){ skipped.push(p.name+' ('+err.message+')'); continue; }
+    if(!rows.length){ skipped.push(p.name+' (no records)'); continue; }
+    used.push({name:p.name, platform, count:rows.length});
+    for(const r of rows) all.push(r);
+  }
+  if(!all.length){
+    showError('None of these '+parts.length+' files matched a format the tool knows. Drop them one at a time to use the manual column mapper.');
+    return;
+  }
+  const before=all.length;
+  const merged=dedup(all);
+  currentKind='customers';
+  convertedRows=merged;
+  currentFilename=parts.map(p=>p.name).join(' + ');
+  const names=[...new Set(used.map(u=>CUSTOMER_PLATFORM_NAMES[u.platform]||u.platform))];
+  sourcePlatformName=names.length===1?names[0]:'previous systems';
+  document.getElementById('originName').textContent=sourcePlatformName;
+  const bits=[used.map(u=>(CUSTOMER_PLATFORM_NAMES[u.platform]||u.platform)+' '+u.count.toLocaleString()).join(' + ')];
+  if(skipped.length) bits.push('NOT read: '+skipped.join(', '));
+  showDetected(names.join(' + '), merged.length, Math.max(0,before-merged.length), bits.join(' \u00b7 '));
+  showPreview(merged);
+  setImportModeUI();
+}
+
 function processBundle(parts, kind){
   hideError();
   if(kind&&kind!=='customers'){
     showError('Multiple files are only supported in the customers box, where a customer / fleet / vehicle set is joined together.');
     return;
   }
-  const found={};
-  for(const p of parts){ const k=smKind(p.raw); if(k&&!found[k]) found[k]=p.raw; }
-  if(!found.customers&&!found.fleet){
-    showError('Dropped '+parts.length+' files but could not find a Shopmonkey customer or fleet export among them. Drop one file at a time for any other format.');
-    return;
-  }
+  const found={}, claimed=new Set();
+  for(const p of parts){ const k=smKind(p.raw); if(k&&!found[k]){ found[k]=p.raw; claimed.add(p); } }
+  // Not a Shopmonkey set → several independent customer lists. Convert each on
+  // its own and merge. Worth doing properly rather than importing them one at a
+  // time: a customer in two of the lists is one customer, and only a combined
+  // pass can see that.
+  if(!found.customers&&!found.fleet) return processMixedCustomerFiles(parts);
+  // A file that isn't part of the Shopmonkey set must not be dropped on the
+  // floor — say so rather than importing three files and silently using two.
+  const ignored=parts.filter(p=>!claimed.has(p)).map(p=>p.name);
   let rows;
   try{ rows=convertShopmonkeyBundle(found); }
   catch(err){ showError('Conversion error: '+err.message); return; }
+  if(ignored.length) rows._ignored=ignored;
   if(!rows.length){ showError('No customers found in these files.'); return; }
   currentKind='customers';
   convertedRows=rows;
@@ -1211,6 +1253,7 @@ function processBundle(parts, kind){
   if(st.shared) bits.push(st.shared+' on two owners');
   if(st.orphanVehicles) bits.push(st.orphanVehicles+' vehicles with no owner (left out)');
   if(st.unresolved) bits.push(st.unresolved+' vehicles whose owner is not in these files');
+  if(rows._ignored) bits.push('NOT read: '+rows._ignored.join(', '));
   showDetected('Shopmonkey ('+Object.keys(found).join(' + ')+')', rows.length, 0, bits.join(' · '));
   showPreview(rows);
   setImportModeUI();
@@ -2144,6 +2187,39 @@ function handleFiles(list, kind){
     .catch(err=>showError(err.message));
 }
 
+const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template'};
+
+// One dispatch table, used by the single-file path and the multi-file path
+// alike — so a converter added later can't reach one and miss the other.
+function convertCustomerRows(platform, raw, rawObjRows){
+  if(platform==='shopmonkey') return convertShopmonkey(raw);
+  if(platform==='smfleet') return convertShopmonkeyFleet(raw);
+  if(platform==='billship') return convertBillShipExport(raw);
+  if(platform==='jobber') return convertJobber(rawObjRows);
+  if(platform==='fieldd') return convertFieldd(rawObjRows);
+  if(platform==='square') return convertSquare(rawObjRows);
+  if(platform==='ebms') return convertEBMS(rawObjRows);
+  if(platform==='ghl') return convertGHL(rawObjRows);
+  if(platform==='tintwiz') return convertTintWiz(rawObjRows);
+  if(platform==='detailbookie') return convertDetailBookie(rawObjRows);
+  if(platform==='hubspot') return convertHubSpot(rawObjRows);
+  if(platform==='stripe') return convertStripe(rawObjRows);
+  if(platform==='mtrx') return convertMTRX(rawObjRows);
+  if(platform==='urablecust') return convertUrableCust(rawObjRows);
+  if(platform==='squarealt') return convertSquareAlt(rawObjRows);
+  if(platform==='jobsexport') return convertJobsExport(rawObjRows);
+  if(platform==='urable') return dedup(rawObjRows.map(r=>HEADERS.map(h=>cl(r[h]))).filter(r=>r.some(v=>v)));
+  return [];
+}
+// header row + header-keyed rows, the shape every converter expects
+function shapeRaw(raw){
+  if(raw[0]&&raw[0].filter(c=>cl(c)).length===1&&/export/i.test(cl(raw[0][0]))&&raw[1]&&raw[1].filter(c=>cl(c)).length>3) raw=raw.slice(1);
+  const headerRow=raw[0]||[];
+  const objRows=raw.slice(1).map(r=>{const o={};headerRow.forEach((h,i)=>{o[cl(h)]=r[i]||'';});return o;})
+    .filter(o=>Object.values(o).some(v=>cl(v)));
+  return {raw, headerRow, objRows};
+}
+
 function processRaw(raw, filename){
   hideError();
   document.getElementById('mapperCard').style.display='none';
@@ -2251,29 +2327,8 @@ function processRaw(raw, filename){
 
   let rows=[], dupesBefore=0;
   try{
-    if(platform==='shopmonkey'){
-      rows=convertShopmonkey(raw);
-    } else if(platform==='smfleet'){
-      rows=convertShopmonkeyFleet(raw);
-    } else if(platform==='billship'){
-      rows=convertBillShipExport(raw);
-    } else {
-      dupesBefore=rawObjRows.length;
-      if(platform==='jobber') rows=convertJobber(rawObjRows);
-      else if(platform==='fieldd') rows=convertFieldd(rawObjRows);
-      else if(platform==='square') rows=convertSquare(rawObjRows);
-      else if(platform==='ebms') rows=convertEBMS(rawObjRows);
-      else if(platform==='ghl') rows=convertGHL(rawObjRows);
-      else if(platform==='tintwiz') rows=convertTintWiz(rawObjRows);
-      else if(platform==='detailbookie') rows=convertDetailBookie(rawObjRows);
-      else if(platform==='hubspot') rows=convertHubSpot(rawObjRows);
-      else if(platform==='stripe') rows=convertStripe(rawObjRows);
-      else if(platform==='mtrx') rows=convertMTRX(rawObjRows);
-      else if(platform==='urablecust') rows=convertUrableCust(rawObjRows);
-      else if(platform==='squarealt') rows=convertSquareAlt(rawObjRows);
-      else if(platform==='jobsexport') rows=convertJobsExport(rawObjRows);
-      else if(platform==='urable') rows=dedup(rawObjRows.map(r=>HEADERS.map(h=>cl(r[h]))).filter(r=>r.some(v=>v)));
-    }
+    if(!['shopmonkey','smfleet','billship'].includes(platform)) dupesBefore=rawObjRows.length;
+    rows=convertCustomerRows(platform, raw, rawObjRows);
   }catch(err){
     showError('Conversion error: '+err.message);
     return;
@@ -2284,7 +2339,7 @@ function processRaw(raw, filename){
   currentKind='customers';
   convertedRows=rows;
   let dupes=dupesBefore>0?Math.max(0,dupesBefore-rows.length):0;
-  let names={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template'};
+  const names=CUSTOMER_PLATFORM_NAMES;
   sourcePlatformName=names[platform];
   document.getElementById('originName').textContent=sourcePlatformName;
   showDetected(names[platform], rows.length, dupes);
