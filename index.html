@@ -123,6 +123,7 @@ tbody tr:last-child td{border-bottom:none}
         <span class="platform-tag">HubSpot</span>
         <span class="platform-tag">Stripe</span>
         <span class="platform-tag">Mobile Tech RX</span>
+        <span class="platform-tag">Acuity</span>
         <span class="platform-tag any">+ Any other system</span>
       </div>
     </div>
@@ -462,8 +463,10 @@ function dedup(rows){
     const a=normName(rows[i]), b=normName(rows[j]);
     return !a||!b||a===b;
   }
+  const crossNoted=new Set();
   function guardedUnion(i,j,idKind){
     if(compatible(i,j)){ union(i,j); return; }
+    crossNoted.add([i,j].sort((a,b)=>a-b).join('|'));
     // Different people sharing an identifier — keep both, cross-note it
     const na=(rows[j][0]+' '+rows[j][1]).trim(), nb=(rows[i][0]+' '+rows[i][1]).trim();
     const tagA='Shares '+idKind+' with: '+na, tagB='Shares '+idKind+' with: '+nb;
@@ -534,6 +537,11 @@ function dedup(rows){
     if(vs.length) base.vehicles=vs;
     out.push(ensureFirstName(base));
   }
+  // Two records sharing a phone or email under different names are kept apart
+  // on purpose — households share a line. But "Elizabeth Kouzel" and "Liz
+  // Kouzel" on one number and one address are one person, and only a human can
+  // say which is which, so count them and put the number where CS will see it.
+  out._crossNoted=crossNoted.size;
   return out;
 }
 
@@ -804,6 +812,69 @@ function convertTintWiz(data){
       phone,email,np.join(' | '),item]);
   }
   return out;
+}
+
+// Acuity Scheduling (Squarespace) client list. Name, phone, email, a notes
+// column and how long since the client last booked — no address, no company,
+// no vehicle. The mess is all in the name and phone columns: Excel escapes
+// "+1…" numbers with a leading apostrophe, names arrive SHOUTED or lowercase,
+// and a few carry a title where the first name should be.
+function fixNameCase(v){
+  v=cl(v);
+  if(!v) return '';
+  if(v===v.toLowerCase()||v===v.toUpperCase())
+    return v.replace(/\b[a-z]/g,c=>c.toUpperCase());
+  return v;
+}
+const NAME_TITLE=/^(?:mr|mrs|ms|miss|dr|name)\b\.?\s*-?\s*/i;
+// A NANP number is ten digits and never starts 0 or 1 in the area code or the
+// exchange. Anything else here is a typo or a test row, and letting it into the
+// phone column would let dedupe match two strangers on the same junk value.
+function acuityPhone(v){
+  const d=cl(v).replace(/^'+/,'').replace(/\D/g,'');
+  const ten=(d.length===11&&d[0]==='1')?d.slice(1):d;
+  if(ten.length!==10) return '';
+  if(/^[01]/.test(ten)||/^[01]/.test(ten.slice(3))) return '';
+  return ten;
+}
+
+function convertAcuity(data){
+  const out=[];
+  let unusablePhone=0, titled=0, recased=0, lastSeen=0;
+  const today=new Date();
+  for(const r of data){
+    const rawFirst=cl(r['First Name']), rawLast=cl(r['Last Name']);
+    if(!rawFirst&&!rawLast&&!cl(r['Email'])&&!cl(r['Phone'])) continue;
+    let first=fixNameCase(rawFirst), last=fixNameCase(rawLast);
+    if(NAME_TITLE.test(first)){ first=first.replace(NAME_TITLE,'').trim(); titled++; }
+    // "Butch / Unknown" is a placeholder the shop typed, not a surname
+    if(/^unknown$/i.test(last)) last='';
+    // "Quintan Brown / Brown" — the surname repeated inside the first name
+    if(last&&first.toLowerCase().endsWith(' '+last.toLowerCase()))
+      first=first.slice(0,-(last.length+1)).trim();
+    if(rawFirst&&first!==rawFirst) recased++;
+    const rawPhone=cl(r['Phone']).replace(/^'+/,'');
+    const phone=acuityPhone(rawPhone);
+    const emails=cl(r['Email']).split(/[;,]/).map(x=>x.trim()).filter(Boolean);
+    const np=[];
+    if(cl(r['Notes'])) np.push(cl(r['Notes']));
+    // Acuity dates the relationship only as an age in days. Turn it into a real
+    // date so the shop can see who has gone quiet, and say it is approximate —
+    // it is counted from the export, not from today.
+    const days=parseInt(cl(r['Days Since Last Appointment']),10);
+    if(!isNaN(days)&&days>=0){
+      const d=new Date(today.getTime()-days*86400000);
+      np.push('Last appointment: ~'+d.toISOString().slice(0,10));
+      lastSeen++;
+    }
+    for(const e of emails.slice(1)) np.push('Alt email: '+e);
+    if(rawPhone&&!phone){ np.push('Phone on file (not a usable number): '+rawPhone); unusablePhone++; }
+    out.push([first,last,'Person','','','','','',countryFor('','',phone),
+      phone,cleanEmail(emails[0]||''),np.join(' | '),'']);
+  }
+  const rows=dedup(out);
+  rows._acuity={unusablePhone,titled,recased,lastSeen,before:out.length};
+  return rows;
 }
 
 function convertDetailBookie(data){
@@ -2089,6 +2160,8 @@ function detectPlatform(filename, headers, rawRows){
   if(fn.includes('mobiletechrx')||fn.includes('mtrx')||
      (h.includes('add_date')&&h.includes('category')&&h.includes('street')&&h.includes('name'))) return 'mtrx';
   if(h.includes('instant profile')) return 'squarealt';
+  // Acuity Scheduling (Squarespace) client list
+  if(h.includes('days since last appointment')) return 'acuity';
   if(h.includes('customer name')&&h.includes('job #')&&h.includes('payment status')) return 'jobsexport';
   if(h.includes('address1')&&h.includes('shippingaddress1')) return 'billship';
   if(rawRows&&rawRows[2]){
@@ -2187,7 +2260,7 @@ function handleFiles(list, kind){
     .catch(err=>showError(err.message));
 }
 
-const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template'};
+const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template','acuity':'Acuity Scheduling'};
 
 // One dispatch table, used by the single-file path and the multi-file path
 // alike — so a converter added later can't reach one and miss the other.
@@ -2208,6 +2281,7 @@ function convertCustomerRows(platform, raw, rawObjRows){
   if(platform==='urablecust') return convertUrableCust(rawObjRows);
   if(platform==='squarealt') return convertSquareAlt(rawObjRows);
   if(platform==='jobsexport') return convertJobsExport(rawObjRows);
+  if(platform==='acuity') return convertAcuity(rawObjRows);
   if(platform==='urable') return dedup(rawObjRows.map(r=>HEADERS.map(h=>cl(r[h]))).filter(r=>r.some(v=>v)));
   return [];
 }
@@ -2342,7 +2416,15 @@ function processRaw(raw, filename){
   const names=CUSTOMER_PLATFORM_NAMES;
   sourcePlatformName=names[platform];
   document.getElementById('originName').textContent=sourcePlatformName;
-  showDetected(names[platform], rows.length, dupes);
+  const extra=[];
+  if(rows._crossNoted) extra.push(rows._crossNoted+' pair'+(rows._crossNoted===1?'':'s')+' share a phone or email under different names \u2014 kept separate, review in Urable');
+  if(rows._acuity){
+    const a=rows._acuity;
+    if(a.recased) extra.push(a.recased+' name'+(a.recased===1?'':'s')+' re-capitalised');
+    if(a.lastSeen) extra.push(a.lastSeen+' with a last-appointment date');
+    if(a.unusablePhone) extra.push(a.unusablePhone+' unusable phone number'+(a.unusablePhone===1?'':'s')+' kept in Notes');
+  }
+  showDetected(names[platform], rows.length, dupes, extra.join(' \u00b7 '));
   showPreview(rows);
   setImportModeUI();
 }
