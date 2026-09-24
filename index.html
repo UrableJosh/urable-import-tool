@@ -827,9 +827,27 @@ function fixNameCase(v){
   return v;
 }
 const NAME_TITLE=/^(?:mr|mrs|ms|miss|dr|name)\b\.?\s*-?\s*/i;
+// A booking form takes whatever the client typed. "." in the surname box is
+// someone skipping a required field, not a name; ", MBA, Certified Sales Leader
+// (CSL)" is a signature block; and a few rows are companies, not people.
+const NAME_PLACEHOLDER=/^[^\w]+$|^(n\/?a|none|null|unknown|test)$/i;
+const NAME_CREDENTIALS=/,\s*(?:MBA|CSL|PhD|Ph\.D|MD|DDS|CPA|Esq|RN|LLC|Jr|Sr|I{2,3}|IV)\b.*$/i;
+const BUSINESS_WORDS=/\b(llc|l\.l\.c|inc|incorporated|corp|corporation|company|enterprises|rentals|services|group|partners|properties|holdings|maint|maintenance|solutions|industries|supply|corecivic)\b/i;
+function straightenQuotes(v){
+  return String(v||'').replace(/[\u2018\u2019]/g,"'").replace(/[\u201c\u201d]/g,'"');
+}
 // A NANP number is ten digits and never starts 0 or 1 in the area code or the
 // exchange. Anything else here is a typo or a test row, and letting it into the
 // phone column would let dedupe match two strangers on the same junk value.
+// Acuity's email box is free text: some rows carry a pasted hyperlink, some
+// carry "N/A" because the field was required and they had nothing to put in it.
+function acuityEmail(v){
+  let e=cl(v).replace(/^mailto:/i,'').trim();
+  if(!e||!/@/.test(e)) return '';
+  if(/^(n\/?a|none|null|-)$/i.test(e)) return '';
+  return e;
+}
+
 function acuityPhone(v){
   const d=cl(v).replace(/^'+/,'').replace(/\D/g,'');
   const ten=(d.length===11&&d[0]==='1')?d.slice(1):d;
@@ -840,22 +858,29 @@ function acuityPhone(v){
 
 function convertAcuity(data){
   const out=[];
-  let unusablePhone=0, titled=0, recased=0, lastSeen=0;
+  let unusablePhone=0, titled=0, recased=0, lastSeen=0, businesses=0;
   const today=new Date();
   for(const r of data){
-    const rawFirst=cl(r['First Name']), rawLast=cl(r['Last Name']);
+    const rawFirst=cl(straightenQuotes(r['First Name'])), rawLast=cl(straightenQuotes(r['Last Name']));
     if(!rawFirst&&!rawLast&&!cl(r['Email'])&&!cl(r['Phone'])) continue;
-    let first=fixNameCase(rawFirst), last=fixNameCase(rawLast);
+    let first=fixNameCase(rawFirst), last=fixNameCase(rawLast.replace(NAME_CREDENTIALS,'').trim());
     if(NAME_TITLE.test(first)){ first=first.replace(NAME_TITLE,'').trim(); titled++; }
-    // "Butch / Unknown" is a placeholder the shop typed, not a surname
-    if(/^unknown$/i.test(last)) last='';
+    // "Butch / Unknown", "Ashley / ." — a placeholder typed into a required box
+    if(NAME_PLACEHOLDER.test(last)) last='';
+    if(NAME_PLACEHOLDER.test(first)) first='';
+    // A company booked in the client-name boxes. Urable's template has no
+    // company column, so the whole name goes in First Name where it survives.
+    let ctype='Person';
+    if(BUSINESS_WORDS.test((first+' '+last).trim())){
+      ctype='Business'; first=(first+' '+last).trim(); last=''; businesses++;
+    }
     // "Quintan Brown / Brown" — the surname repeated inside the first name
     if(last&&first.toLowerCase().endsWith(' '+last.toLowerCase()))
       first=first.slice(0,-(last.length+1)).trim();
     if(rawFirst&&first!==rawFirst) recased++;
     const rawPhone=cl(r['Phone']).replace(/^'+/,'');
     const phone=acuityPhone(rawPhone);
-    const emails=cl(r['Email']).split(/[;,]/).map(x=>x.trim()).filter(Boolean);
+    const emails=cl(r['Email']).split(/[;,]/).map(x=>acuityEmail(x)).filter(Boolean);
     const np=[];
     if(cl(r['Notes'])) np.push(cl(r['Notes']));
     // Acuity dates the relationship only as an age in days. Turn it into a real
@@ -869,11 +894,11 @@ function convertAcuity(data){
     }
     for(const e of emails.slice(1)) np.push('Alt email: '+e);
     if(rawPhone&&!phone){ np.push('Phone on file (not a usable number): '+rawPhone); unusablePhone++; }
-    out.push([first,last,'Person','','','','','',countryFor('','',phone),
-      phone,cleanEmail(emails[0]||''),np.join(' | '),'']);
+    out.push([first,last,ctype,'','','','','',countryFor('','',phone),
+      phone,emails[0]||'',np.join(' | '),'']);
   }
   const rows=dedup(out);
-  rows._acuity={unusablePhone,titled,recased,lastSeen,before:out.length};
+  rows._acuity={unusablePhone,titled,recased,lastSeen,businesses,before:out.length};
   return rows;
 }
 
@@ -2422,6 +2447,7 @@ function processRaw(raw, filename){
     const a=rows._acuity;
     if(a.recased) extra.push(a.recased+' name'+(a.recased===1?'':'s')+' re-capitalised');
     if(a.lastSeen) extra.push(a.lastSeen+' with a last-appointment date');
+    if(a.businesses) extra.push(a.businesses+' detected as business'+(a.businesses===1?'':'es'));
     if(a.unusablePhone) extra.push(a.unusablePhone+' unusable phone number'+(a.unusablePhone===1?'':'s')+' kept in Notes');
   }
   showDetected(names[platform], rows.length, dupes, extra.join(' \u00b7 '));
