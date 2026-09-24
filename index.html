@@ -822,8 +822,11 @@ function convertTintWiz(data){
 function fixNameCase(v){
   v=cl(v);
   if(!v) return '';
+  // Lowercase FIRST. Upper-casing the initial of "JEREMY" does nothing — there
+  // are no lowercase letters left to act on — so SHOUTED names went through
+  // untouched while lowercase ones were fixed.
   if(v===v.toLowerCase()||v===v.toUpperCase())
-    return v.replace(/\b[a-z]/g,c=>c.toUpperCase());
+    return v.toLowerCase().replace(/\b[a-z]/g,c=>c.toUpperCase());
   return v;
 }
 const NAME_TITLE=/^(?:mr|mrs|ms|miss|dr|name)\b\.?\s*-?\s*/i;
