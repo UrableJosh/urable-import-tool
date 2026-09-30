@@ -1944,7 +1944,12 @@ function parseJobsExport(data){
   for(const r of data){
     const status=cl(r['Status']).toLowerCase();
     if(!cl(r['Customer Name'])&&!cl(r['Customer Phone Number'])&&!cl(r['Customer Email'])) continue;
-    const vehicles=cl(r['Items'])?cl(r['Items']).split(/,\s*/).map(cl).filter(Boolean):[];
+    // A vehicle's own name can contain a comma ("(Dad, Stephen's) 2024 Ford
+    // Expedition Max XLT"). The Items column is comma-separated, so that one
+    // vehicle arrives split in two. Keep the unsplit cell so the later passes
+    // can prefer it when it matches a real vehicle on the account.
+    const vehiclesRaw=cl(r['Items']);
+    const vehicles=vehiclesRaw?vehiclesRaw.split(/,\s*/).map(cl).filter(Boolean):[];
     const vins=cl(r['VINs'])?cl(r['VINs']).split(/,\s*/).map(cl):[];
     const plates=cl(r['License Plates'])?cl(r['License Plates']).split(/,\s*/).map(cl):[];
     const lineItems=cl(r['Line Items'])?cl(r['Line Items']).split(/,(?![^()]*\))\s*/).map(cl).filter(Boolean):[];
@@ -1980,7 +1985,7 @@ function parseJobsExport(data){
         a1:cl(r['Address Line 1']),a2:cl(r['Address Line 2']),
         city:cl(r['City']),state:cl(r['State']),zip:cl(r['Postal Code']),country:cl(r['Country'])
       },
-      vehicles,vins,plates,
+      vehicles,vehiclesRaw,vins,plates,
       lineItems,subtotal,
       perLineCents: lineItems.length?Math.floor(subtotal/lineItems.length):0,
       firstLineCents: lineItems.length?subtotal-Math.floor(subtotal/lineItems.length)*(lineItems.length-1):0,
@@ -3495,7 +3500,8 @@ async function importJobsRun(key){
     });
     j.vehicles.forEach((v,i)=>{
       const vk=ck+'|'+normVeh(v);
-      if(!uniqueVeh[vk]) uniqueVeh[vk]={ck,name:v,vin:j.vins[i]||'',plate:j.plates[i]||'',itype:j.itemType||'automotive'};
+      if(!uniqueVeh[vk]) uniqueVeh[vk]={ck,name:v,vin:j.vins[i]||'',plate:j.plates[i]||'',itype:j.itemType||'automotive',
+        raw:(j.vehicles.length>1?(j.vehiclesRaw||''):'')};
     });
   }
   if(!useCatalog){
@@ -3902,7 +3908,10 @@ async function importJobsRun(key){
 
   // 3) vehicles (skip ones already on the matched customer, incl. fuzzy match)
   await pool(vehList, 4, async ([vk,v])=>{
-    const existing=findVehicle(v.ck,v.name);
+    // Half of a comma-containing name ("(Dad") matches nothing on its own and
+    // would be created as a junk vehicle. If the unsplit cell names a real one,
+    // point this fragment at it instead.
+    const existing=findVehicle(v.ck,v.name)||(v.raw?(itemMap[v.ck+'|'+normVeh(v.raw)]||null):null);
     if(existing){ itemMap[vk]=existing; reusedVeh++; tick('Matching vehicles'); return; }
     const custId=custMap[v.ck];
     if(!custId){ tick('Creating vehicles'); return; }
@@ -3935,7 +3944,17 @@ async function importJobsRun(key){
       }                            // that is a finished state, not a failure
       tick('Matching jobs'); return;
     }
-    let itemIds=j.vehicles.map(v=>itemMap[ck+'|'+normVeh(v)]||findVehicle(ck,v)).filter(Boolean);
+    // The unsplit cell wins when it exactly names a vehicle on the account —
+    // that settles the comma-inside-a-name case without guessing. Exact match
+    // only: a genuine two-vehicle cell ("Accord, Camry") never matches one item.
+    let itemIds=[];
+    if(j.vehicles.length>1&&cl(j.vehiclesRaw||'')){
+      const whole=itemMap[ck+'|'+normVeh(j.vehiclesRaw)];
+      if(whole) itemIds=[whole];
+    }
+    // Two halves of one name can also resolve to the SAME item — dedupe, or the
+    // job goes out with two items and one line.
+    if(!itemIds.length) itemIds=[...new Set(j.vehicles.map(v=>itemMap[ck+'|'+normVeh(v)]||findVehicle(ck,v)).filter(Boolean))];
     if(!itemIds.length){
       // Jobs require at least one item — create a placeholder vehicle once per customer
       const pk=ck+'|__placeholder__';
@@ -3946,6 +3965,13 @@ async function importJobsRun(key){
       if(itemMap[pk]) itemIds=[itemMap[pk]];
     }
     if(!itemIds.length){ failedJobs++; err('job #'+j.num,'no vehicle/item available'); tick('Creating jobs'); return; }
+    // Urable rejects a job carrying an item with no line item. Rather than lose
+    // the whole job, drop the unreferenced vehicles and say which ones.
+    if(itemIds.length>j.lineItems.length&&j.lineItems.length>0){
+      const dropped=itemIds.length-j.lineItems.length;
+      itemIds=itemIds.slice(0,j.lineItems.length);
+      logLine('job #'+j.num+': '+dropped+' vehicle(s) had no line item and were left off the job. Source Items cell: '+(j.vehiclesRaw||j.vehicles.join(', ')),true);
+    }
     const lineItems=j.lineItems.map((li,i)=>{
       const cents=j.lineCents?j.lineCents[i]:(i===0?(j.firstLineCents??j.perLineCents):j.perLineCents);
       const itemId=itemIds[j.lineItems.length===itemIds.length?i:0]||itemIds[0];
