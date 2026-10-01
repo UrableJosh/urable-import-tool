@@ -2749,7 +2749,9 @@ function convertAgendaJobs(data){
       // the cadence inferred from this series' own dates.
       const said=stated[sid]||'';
       if(said) stated_n++;
-      const how=said?said.replace(/^Repeats\s+/i,''):cadence[sid]||'';
+      // "(2 dates skipped)" describes the past; it only muddies an instruction
+      // about how the job should repeat from here on.
+      const how=said?said.replace(/^Repeats\s+/i,'').replace(/\s*\([^)]*skipped\)/i,''):cadence[sid]||'';
       if(lastOfSeries[sid]===start){
         np.push('LAST of this recurring series \u2014 set this job to repeat'+
                 (how?' '+how:'')+' to carry the series forward');
