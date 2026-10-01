@@ -2648,7 +2648,30 @@ function convertAgendaSquare(data){
 // shop's forward book, not its history.
 function convertAgendaJobs(data){
   const canon=agendaCanonical(data);
-  const jobs=[]; let noDate=0, noPrice=0, withVeh=0;
+  // Every appointment comes in as its own job, so the recurrence itself is not
+  // carried over. Find the LAST appointment of each series and say so on the
+  // job: that is the one the shop sets to repeat to pick the series back up.
+  const lastOfSeries={}, seriesDates={};
+  for(const r of data){
+    const sid=cl(r['Serie_Google']); if(!sid) continue;
+    const t=parseJobDate(r['Inicio_PR']); if(!t) continue;
+    (seriesDates[sid]=seriesDates[sid]||[]).push(t);
+    if(!lastOfSeries[sid]||t>lastOfSeries[sid]) lastOfSeries[sid]=t;
+  }
+  // Cadence from the gaps between instances — the appointments file carries no
+  // rule of its own, and a median gap is steadier than any single pair.
+  const cadence={};
+  for(const sid in seriesDates){
+    const d=seriesDates[sid].slice().sort((a,b)=>a-b);
+    if(d.length<2) continue;
+    const gaps=[]; for(let i=1;i<d.length;i++) gaps.push((d[i]-d[i-1])/86400000);
+    gaps.sort((a,b)=>a-b);
+    const g=gaps[Math.floor(gaps.length/2)];
+    cadence[sid]= g<10?'weekly': g<18?'every 2 weeks': g<25?'every 3 weeks':
+                  g<38?'monthly': g<52?'every 6 weeks': g<75?'every 2 months':
+                  g<135?'every 3 months': g<225?'every 6 months':'yearly';
+  }
+  const jobs=[]; let noDate=0, noPrice=0, withVeh=0, tagged=0;
   let d30=0,d90=0,d365=0,beyond=0;
   const now=Date.now();
   for(const r of data){
@@ -2671,7 +2694,16 @@ function convertAgendaJobs(data){
     const np=[];
     if(p.note) np.push(p.note);
     if(cl(r['Reserva_Square'])) np.push('Square booking: '+cl(r['Reserva_Square']));
-    if(cl(r['Serie_Google'])) np.push('Part of a recurring series in Google Calendar');
+    const sid=cl(r['Serie_Google']);
+    if(sid){
+      if(lastOfSeries[sid]===start){
+        np.push('LAST of this recurring series \u2014 set this job to repeat'+
+                (cadence[sid]?' '+cadence[sid]:'')+' to carry the series forward');
+        tagged++;
+      } else {
+        np.push('Part of a recurring series'+(cadence[sid]?' ('+cadence[sid]+')':''));
+      }
+    }
     jobs.push({
       num:'', status:'scheduled', type:'shop', title:'',
       customer:{ name:name, email:cleanEmail(r['Email']), phone:agendaPhone(r['Telefono']),
@@ -2689,7 +2721,7 @@ function convertAgendaJobs(data){
       taxed:false, notes:np.join(' | '), total:subtotal, paid:0
     });
   }
-  jobs._agenda={noDate,noPrice,withVeh,d30,d90,d365,beyond};
+  jobs._agenda={noDate,noPrice,withVeh,d30,d90,d365,beyond,tagged};
   return jobs;
 }
 
@@ -2771,7 +2803,12 @@ function processRaw(raw, filename){
     document.getElementById('originName').textContent=sourcePlatformName;
     const paidCents=jobsData.reduce((s,j)=>s+j.paid,0);
     showDetected(sourcePlatformName, jobsData.length, 0);
-    document.getElementById('detStats').textContent=jobsData.length.toLocaleString()+' jobs · $'+(paidCents/100).toLocaleString(undefined,{maximumFractionDigits:0})+' historical payments';
+    const ag=jobsData._agenda;
+    document.getElementById('detStats').textContent=ag
+      ? (jobsData.length.toLocaleString()+' scheduled jobs \u00b7 '+ag.d90.toLocaleString()+
+         ' in the next 90 days \u00b7 '+ag.beyond.toLocaleString()+' more than a year out \u00b7 '+
+         ag.tagged.toLocaleString()+' marked as the last of a repeating series')
+      : (jobsData.length.toLocaleString()+' jobs \u00b7 $'+(paidCents/100).toLocaleString(undefined,{maximumFractionDigits:0})+' historical payments');
     showPreview(convertedRows);
     setImportModeUI();
     setMode('api'); // jobs only make sense via API import
