@@ -2193,6 +2193,11 @@ function detectPlatform(filename, headers, rawRows){
   if(fn.includes('mobiletechrx')||fn.includes('mtrx')||
      (h.includes('add_date')&&h.includes('category')&&h.includes('street')&&h.includes('name'))) return 'mtrx';
   if(h.includes('instant profile')) return 'squarealt';
+  // Housecall Pro customer export: four address blocks and its own flags
+  if(h.includes('address_1 street line 1')&&(h.includes('customer is contractor')||h.includes('lifetime value'))) return 'hcpcust';
+  // A bought client list: a name, one contact column, a rough address
+  if(h.includes('name')&&h.includes('address')&&(h.includes('contact method')||h.includes('contact'))
+     &&(h.includes('cost')||h.includes('average cost per job')||h.includes('ceramic coat client'))) return 'purchased';
   // Acuity Scheduling (Squarespace) client list
   if(h.includes('days since last appointment')) return 'acuity';
   if(h.includes('customer name')&&h.includes('job #')&&h.includes('payment status')) return 'jobsexport';
@@ -2235,7 +2240,9 @@ let expectedKind='customers';       // which drop zone the file came from
 
 // Reading a file and interpreting it are two jobs. Split them so a bundle of
 // files can be read together and only interpreted once they are all in hand.
-function readRows(file){
+// Returns one part per readable sheet: a CSV is always a single part, a
+// workbook is one per tab that holds more than a title row.
+function readParts(file){
   return new Promise((resolve,reject)=>{
     const ext=file.name.split('.').pop().toLowerCase();
     const rd=new FileReader();
@@ -2244,17 +2251,29 @@ function readRows(file){
       rd.onload=e=>{
         try{
           const wb=XLSX.read(e.target.result,{type:'array'});
-          const ws=wb.Sheets[wb.SheetNames[0]];
-          // Some exports declare a bogus single-cell dimension (!ref="A1")
-          // which hides every row — recompute the true range from actual cells.
-          (function fixRange(){
-            const cells=Object.keys(ws).filter(k=>/^[A-Z]+\d+$/.test(k));
-            if(!cells.length) return;
-            let maxR=0,maxC=0;
-            for(const a of cells){const d=XLSX.utils.decode_cell(a);if(d.r>maxR)maxR=d.r;if(d.c>maxC)maxC=d.c;}
-            ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:maxR,c:maxC}});
-          })();
-          resolve(XLSX.utils.sheet_to_json(ws,{header:1,defval:''}));
+          // Shops hand over workbooks with a tab per list — a bought client
+          // list arrived as "Leads" and "Repeat Clients" in one file. Reading
+          // only the first sheet silently dropped the rest, so read them all
+          // and let the caller treat each tab as its own file.
+          const parts=[];
+          for(const sn of wb.SheetNames){
+            const ws=wb.Sheets[sn]; if(!ws) continue;
+            // Some exports declare a bogus single-cell dimension (!ref="A1")
+            // which hides every row — recompute the true range from actual cells.
+            (function fixRange(){
+              const cells=Object.keys(ws).filter(k=>/^[A-Z]+\d+$/.test(k));
+              if(!cells.length) return;
+              let maxR=0,maxC=0;
+              for(const a of cells){const d=XLSX.utils.decode_cell(a);if(d.r>maxR)maxR=d.r;if(d.c>maxC)maxC=d.c;}
+              ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:maxR,c:maxC}});
+            })();
+            const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+            const filled=rows.filter(r=>r.some(c=>cl(c)));
+            if(filled.length<2) continue;     // an empty or title-only tab
+            parts.push({name:wb.SheetNames.length>1?(file.name+' \u2014 '+sn):file.name,raw:rows});
+          }
+          if(!parts.length) throw new Error('no readable sheets');
+          resolve(parts);
         }catch(err){ reject(new Error('Could not read XLSX file: '+err.message)); }
       };
       rd.readAsArrayBuffer(file);
@@ -2265,7 +2284,7 @@ function readRows(file){
         let text=new TextDecoder(forceLatin?'windows-1252':'utf-8').decode(e.target.result);
         // a replacement char means the utf-8 guess was wrong
         if(!forceLatin&&text.includes('\ufffd')) text=new TextDecoder('windows-1252').decode(e.target.result);
-        resolve(Papa.parse(text,{header:false,skipEmptyLines:false}).data);
+        resolve([{name:file.name,raw:Papa.parse(text,{header:false,skipEmptyLines:false}).data}]);
       };
       rd.readAsArrayBuffer(file);
     }
@@ -2276,7 +2295,11 @@ function handleFile(file, kind){
   if(!file) return;
   expectedKind=kind||'customers';
   currentFilename=file.name;
-  readRows(file).then(raw=>processRaw(raw,file.name)).catch(err=>showError(err.message));
+  readParts(file).then(parts=>{
+    // A multi-tab workbook goes down the same path as a multi-file drop.
+    if(parts.length===1) return processRaw(parts[0].raw,file.name);
+    return processBundle(parts,expectedKind);
+  }).catch(err=>showError(err.message));
 }
 
 // Some systems only make sense as a set of files. Shopmonkey is the first:
@@ -2288,12 +2311,226 @@ function handleFiles(list, kind){
   if(!files.length) return;
   if(files.length===1) return handleFile(files[0],kind);
   expectedKind=kind||'customers';
-  Promise.all(files.map(f=>readRows(f).then(raw=>({name:f.name,raw}))))
+  Promise.all(files.map(f=>readParts(f)))
+    .then(lists=>lists.flat())
     .then(parts=>processBundle(parts,kind))
     .catch(err=>showError(err.message));
 }
 
-const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template','acuity':'Acuity Scheduling'};
+// ─── Housecall Pro ──────────────────────────────────────────────────────────
+// Customer export: one row per customer, up to four addresses, and the shop's
+// own flags (do-not-service, marketing consent) that are worth keeping.
+function convertHCPCustomers(data){
+  const out=[]; let dns=0, extraAddr=0, companies=0, fromDisplay=0;
+  for(const r of data){
+    let first=cl(straightenQuotes(r['First Name'])), last=cl(straightenQuotes(r['Last Name']));
+    if(!first&&!last){
+      const dn=cl(straightenQuotes(r['Display Name']));
+      if(!dn&&!cl(r['Mobile Number'])&&!cl(r['Email'])) continue;
+      const p=dn.split(/\s+/);
+      first=p.length>1?p.slice(0,-1).join(' '):dn; last=p.length>1?p[p.length-1]:'';
+      if(dn) fromDisplay++;
+    }
+    // Housecall Pro keeps its own business/homeowner flag. Trust it rather than
+    // inferring from the Company column, which usually just records where
+    // someone works — 21 of ACEE's 453 had a company, only 3 were businesses.
+    const ctype=cl(r['Customer Type']).toLowerCase()==='business'?'Business':'Person';
+    const phones=[r['Mobile Number'],r['Home Number'],r['Work Number']].map(usPhone).filter(Boolean);
+    const emails=[cl(r['Email'])].concat(cl(r['Additional Emails']).split(/[;,]/))
+      .map(cleanEmail).filter(Boolean);
+    const np=[];
+    if(cl(r['Do Not Service']).toLowerCase()==='true'){ np.push('DO NOT SERVICE (flagged in Housecall Pro)'); dns++; }
+    const company=cl(r['Company']);
+    if(company){ np.push('Company: '+company+(cl(r['Role'])?' ('+cl(r['Role'])+')':'')); companies++; }
+    if(cl(r['Notes'])) np.push(cl(r['Notes']).replace(/\s*\n\s*/g,' '));
+    const tags=cl(r['Tags']).replace(/['‘’]/g,'').trim();
+    if(tags) np.push('Tags: '+tags);
+    if(cl(r['Lead Source'])) np.push('Lead source: '+cl(r['Lead Source']));
+    if(cl(r['Address_1 Notes'])) np.push('Address notes: '+cl(r['Address_1 Notes']).replace(/\s*\n\s*/g,' '));
+    // Up to four addresses in, one out. The extras ride in the notes so the
+    // shop still has them — losing a second service address is a real loss.
+    for(let i=2;i<=4;i++){
+      const s=cl(r['Address_'+i+' Street Line 1']); if(!s) continue;
+      const bits=[s,cl(r['Address_'+i+' Street Line 2']),cl(r['Address_'+i+' City']),
+                  cl(r['Address_'+i+' State']),cl(r['Address_'+i+' Postal Code'])].filter(Boolean).join(', ');
+      const an=cl(r['Address_'+i+' Notes']);
+      np.push('Additional address: '+bits+(an?' ('+an.replace(/\s*\n\s*/g,' ')+')':''));
+      extraAddr++;
+    }
+    for(const p of phones.slice(1)) np.push('Alt phone: '+p);
+    for(const e of emails.slice(1)) np.push('Alt email: '+e);
+    if(cl(r['SMS marketing consent']).toLowerCase()==='opted-out') np.push('SMS marketing: opted out');
+    if(cl(r['Email marketing consent']).toLowerCase()==='opted-out') np.push('Email marketing: opted out');
+    const st=cl(r['Address_1 State']), zip=cl(r['Address_1 Postal Code']);
+    // Street lines can carry a newline typed into the box; flatten them or the
+    // CSV row breaks in two.
+    const flat=v=>cl(v).replace(/\s*\n\s*/g,' ').replace(/\s{2,}/g,' ');
+    out.push([first,last,ctype,flat(r['Address_1 Street Line 1']),flat(r['Address_1 Street Line 2']),
+      flat(r['Address_1 City']),st,zip,countryFor(st,zip,phones[0]||''),
+      phones[0]||'',emails[0]||'',np.join(' | ').slice(0,1800),'']);
+  }
+  const rows=dedup(out);
+  rows._hcpcust={dns,extraAddr,companies,fromDisplay,before:out.length};
+  return rows;
+}
+
+// A street and a city that run together with no separator ("528 Tenth Street
+// Fort Collins, CO 80524") can only be cut at a city name we recognise. Longest
+// first, so "Fort Collins" wins over "Collins".
+const LOOSE_CITIES=['Fort Collins','Estes Park','Red Feather Lakes','Glen Haven','La Salle',
+ 'Wellington','Johnstown','Platteville','Livermore','Masonville','Firestone','Frederick',
+ 'Loveland','Berthoud','Milliken','Longmont','Cheyenne','Greeley','Timnath','Severance',
+ 'Boulder','Windsor','Gilcrest','Dacono','Kersey','Pierce','Niwot','Evans','Eaton','Laporte',
+ 'Bellvue','Drake','Lyons','Erie','Ault','Nunn','Mead','Carr',
+ 'Lafayette','Brighton','Louisville','Briggsdale','Winter Park','Dillon','Greenwood Village',
+ 'Thornton','Broomfield','Arvada','Westminster','Northglenn','Lakewood','Aurora','Denver',
+ 'Golden','Superior','Fort Lupton','Brush','Sterling','Cheyenne','Laramie'].sort((a,b)=>b.length-a.length);
+function splitLooseAddress(v){
+  let s=cl(v).replace(/\s+/g,' ').trim();
+  if(!s) return ['','','',''];
+  let state='', zip='';
+  let m=s.match(/\b(CO|WY|NE|KS|NM|UT|Colorado|Wyoming)\b\s*,?\s*(\d{5})(?:-\d{4})?\s*$/i);
+  if(m){ state=m[1].slice(0,2).toUpperCase(); zip=m[2]; s=s.slice(0,m.index); }
+  else {
+    m=s.match(/\b(CO|WY|NE|KS|NM|UT|Colorado|Wyoming)\b\s*$/i);
+    if(m){ state=m[1].slice(0,2).toUpperCase(); s=s.slice(0,m.index); }
+    else { m=s.match(/(\d{5})(?:-\d{4})?\s*$/); if(m){ zip=m[1]; s=s.slice(0,m.index); } }
+  }
+  s=s.replace(/[,\s]+$/,'').trim();
+  let city='';
+  for(const c of LOOSE_CITIES){
+    const re=new RegExp('[,\\s]'+c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\s*$','i');
+    if(re.test(s)){ city=c; s=s.replace(re,'').replace(/[,\s]+$/,'').trim(); break; }
+  }
+  if(!city){
+    const mm=s.match(/^(.*),\s*([A-Za-z .''-]{2,30})$/);
+    if(mm){ s=mm[1].replace(/[,\s]+$/,'').trim(); city=mm[2].trim(); }
+  }
+  return [s,city,state,zip];
+}
+
+// Excel keeps dates as a serial number; sheet_to_json hands them over as-is.
+function excelDate(v){
+  if(v===null||v===undefined||v==='') return '';
+  const s=String(v).trim();
+  if(/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+  const n=Number(s);
+  if(isFinite(n)&&n>20000&&n<80000){
+    const d=new Date(Math.round((n-25569)*86400000));
+    return isNaN(d.getTime())?s:d.toISOString().slice(0,10);
+  }
+  const d=new Date(s);
+  return isNaN(d.getTime())?s:d.toISOString().slice(0,10);
+}
+
+// ─── Bought client list ─────────────────────────────────────────────────────
+// A spreadsheet one shop bought from another: a name, one contact field that is
+// sometimes a phone and sometimes an email, a rough address, and what they last
+// paid. No ids, no consistent name format, often first names only.
+function convertPurchasedList(data){
+  const out=[]; let leads=0, repeats=0, noContact=0, singleName=0;
+  for(const r of data){
+    const name=cl(straightenQuotes(r['Name'])); if(!name) continue;
+    const isRepeat=('Average Cost per job' in r)||('2022' in r)||('Ceramic Coat Client' in r);
+    // One column holds a phone for most rows and an email for a few. Only
+    // something with an @ in it is an email — cleanEmail alone will happily
+    // keep "970-893-0104".
+    const contact=cl(r['Contact method']||r['Contact']||r['Phone']||'');
+    const phone=usPhone(contact);
+    const email=contact.includes('@')?cleanEmail(contact):'';
+    const p=name.split(/\s+/);
+    let first=p.length>1?p.slice(0,-1).join(' '):name, last=p.length>1?p[p.length-1]:'';
+    if(p.length===1) singleName++;
+    let ctype='Person';
+    if(BUSINESS_WORDS.test(name)){ ctype='Business'; first=name; last=''; }
+    const [a1,city,state,zip]=splitLooseAddress(r['Address']);
+    const np=['Bought client list'];
+    if(isRepeat){
+      repeats++;
+      const yrs=['2022','2023','2024','2025','2026']
+        .map(y=>({y,n:parseInt(cl(r[y])||'0',10)||0})).filter(x=>x.n>0);
+      if(yrs.length) np.push('Jobs: '+yrs.map(x=>x.y+' ×'+x.n).join(', '));
+      const avg=cleanPrice(r['Average Cost per job']);
+      if(avg) np.push('Average job: '+fmtPrice(avg));
+      if(cl(r['Ceramic Coat Client'])) np.push('Ceramic coating client');
+    } else {
+      leads++;
+      const d=excelDate(r['Date']); if(d) np.push('Last job: '+d);
+      const c=cleanPrice(r['Cost']); if(c) np.push('Last amount: '+fmtPrice(c));
+      if(cl(r['Notes'])) np.push(cl(r['Notes']).replace(/\s*\n\s*/g,' '));
+    }
+    if(contact&&!phone&&!email){ np.push('Contact on file: '+contact); noContact++; }
+    out.push([first,last,ctype,a1,'',city,state,zip,countryFor(state,zip,phone),
+      phone,email,np.join(' | ').slice(0,1800),'']);
+  }
+  const rows=dedup(out);
+  rows._purchased={leads,repeats,noContact,singleName,before:out.length};
+  return rows;
+}
+
+// Housecall Pro jobs export. One row per job, no line-item breakdown and no
+// vehicles — Housecall Pro does not track them, so every job arrives with just
+// a description and a set of amounts.
+function convertHCPJobs(data){
+  const STATUS={'completed':'completed','scheduled':'scheduled','in progress':'in progress',
+    'unscheduled':'quote','canceled':'canceled','cancelled':'canceled','pro canceled':'canceled'};
+  const jobs=[]; let noName=0, mismatch=0;
+  for(const r of data){
+    const name=cl(r['Customer name']); if(!name){ noName++; continue; }
+    // Housecall Pro writes the job number as ="123" so Excel keeps it as text.
+    const num=cl(r['Job #']).replace(/^=/,'').replace(/"/g,'').trim();
+    const desc=cl(r['Job description']).replace(/\s*\n\s*/g,' ')||'Imported service';
+    // "Job revenue" is what the shop actually billed. "Job amount" is the
+    // pre-adjustment figure and the two disagree on 213 of ACEE's 882 jobs,
+    // with the discount column reconciling neither — so revenue is the honest
+    // number for the job total, and the rest is recorded in the notes.
+    const revenue=moneyCents(r['Job revenue']);
+    const amount=moneyCents(r['Job amount']);
+    const paid=moneyCents(r['Paid amount']);
+    const disc=moneyCents(r['Discount amount']);
+    const total=revenue||amount;
+    const start=parseJobDate(r['Job scheduled start date'])||parseJobDate(r['Job created date']);
+    const comp=parseJobDate(r['Job completed date']);
+    const [a1,city,state,zip]=splitLooseAddress(r['Address']);
+    const np=[];
+    if(amount&&amount!==total){ np.push('Housecall Pro job amount: '+fmtPrice(amount/100)); mismatch++; }
+    if(disc>0) np.push('Housecall Pro discount: '+fmtPrice(disc/100));
+    if(cl(r['Assigned employees'])) np.push('Assigned: '+cl(r['Assigned employees']));
+    if(cl(r['Job tags'])) np.push('Job tags: '+cl(r['Job tags']));
+    const seg=parseInt(cl(r['Segments'])||'1',10);
+    if(seg>1) np.push(seg+' scheduled visits in Housecall Pro');
+    const status=STATUS[cl(r['Job status']).toLowerCase()]||'completed';
+    jobs.push({
+      num:num,
+      status:status,
+      type:'field',          // ACEE is mobile: the work happens at the address
+      title:'',
+      customer:{ name:name, email:cleanEmail(r['Customer email']),
+        phone:usPhone(r['Customer mobile number']),
+        a1:a1,a2:'',city:city,state:state,zip:zip,country:countryFor(state,zip,'') },
+      vehicles:[], vins:[], plates:[],
+      itemType:'automotive',
+      completedAt:comp,
+      updatedAt:comp||start,
+      lineItems:[desc],
+      lineCents:[total],
+      lineCats:['Imported'],
+      lineSizes:[''],
+      subtotal:total,
+      perLineCents:total,
+      firstLineCents:total,
+      adjustments:[],
+      start:start,end:comp||start,dropOff:start,allDay:false,
+      taxed:false,
+      notes:np.join(' | '),
+      total:total,paid:paid
+    });
+  }
+  jobs._hcp={noName,mismatch};
+  return jobs;
+}
+
+const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template','acuity':'Acuity Scheduling','hcpcust':'Housecall Pro','purchased':'Bought client list'};
 
 // One dispatch table, used by the single-file path and the multi-file path
 // alike — so a converter added later can't reach one and miss the other.
@@ -2315,12 +2552,14 @@ function convertCustomerRows(platform, raw, rawObjRows){
   if(platform==='squarealt') return convertSquareAlt(rawObjRows);
   if(platform==='jobsexport') return convertJobsExport(rawObjRows);
   if(platform==='acuity') return convertAcuity(rawObjRows);
+  if(platform==='hcpcust') return convertHCPCustomers(rawObjRows);
+  if(platform==='purchased') return convertPurchasedList(rawObjRows);
   if(platform==='urable') return dedup(rawObjRows.map(r=>HEADERS.map(h=>cl(r[h]))).filter(r=>r.some(v=>v)));
   return [];
 }
 // header row + header-keyed rows, the shape every converter expects
 function shapeRaw(raw){
-  if(raw[0]&&raw[0].filter(c=>cl(c)).length===1&&/export/i.test(cl(raw[0][0]))&&raw[1]&&raw[1].filter(c=>cl(c)).length>3) raw=raw.slice(1);
+  if(raw[0]&&raw[0].filter(c=>cl(c)).length===1&&raw[1]&&raw[1].filter(c=>cl(c)).length>3) raw=raw.slice(1);
   const headerRow=raw[0]||[];
   const objRows=raw.slice(1).map(r=>{const o={};headerRow.forEach((h,i)=>{o[cl(h)]=r[i]||'';});return o;})
     .filter(o=>Object.values(o).some(v=>cl(v)));
@@ -2330,33 +2569,38 @@ function shapeRaw(raw){
 function processRaw(raw, filename){
   hideError();
   document.getElementById('mapperCard').style.display='none';
-  // Jobber-style exports put a title row above the headers — skip it
-  if(raw[0]&&raw[0].filter(c=>cl(c)).length===1&&/export/i.test(cl(raw[0][0]))&&raw[1]&&raw[1].filter(c=>cl(c)).length>3){
+  // A title row above the headers: Jobber writes "... export", a shop's own
+  // workbook writes "Leads from Cody's Car Care". One filled cell over a row
+  // with several is a title either way.
+  if(raw[0]&&raw[0].filter(c=>cl(c)).length===1&&raw[1]&&raw[1].filter(c=>cl(c)).length>3){
     raw=raw.slice(1);
   }
   let headerRow=raw[0]||[];
   // Jobs drop zone: needs a full jobs export (with line items/packages + amounts)
   if(expectedKind==='jobs'){
     const hl=headerRow.map(x=>cl(x).toLowerCase());
-    const isUrable=hl.includes('job #')&&hl.includes('customer name');
+    // Housecall Pro's jobs export also has 'Job #' and 'Customer name', so it
+    // has to be recognised before the Urable shape or it is read as one.
+    const isHCP=hl.includes('job description')&&hl.includes('job status')&&hl.includes('job revenue');
+    const isUrable=!isHCP&&hl.includes('job #')&&hl.includes('customer name');
     const isDB=hl.includes('job_status')&&hl.includes('pay_status')&&hl.includes('charged');
     // Detail Bookie BackOffice ticket scrape: one row per invoice line item
     const isTicket=hl.includes('job_id')&&hl.includes('line_no')&&hl.includes('service_name')&&hl.includes('price');
-    if(!isUrable&&!isDB&&!isTicket){
+    if(!isUrable&&!isDB&&!isTicket&&!isHCP){
       showError('This does not look like a supported jobs export. Supported: Urable jobs export, Detail Bookie all-jobs export, Detail Bookie ticket scrape. Send the file to Josh to get the format added.');
       return;
     }
     rawObjRows=raw.slice(1).map(r=>{let o={};headerRow.forEach((h,i)=>{o[cl(h)]=r[i]||'';});return o;})
       .filter(o=>Object.values(o).some(v=>cl(v)));
-    if(isUrable&&!headerRow.map(cl).includes('Line Items')){
+    if(isUrable&&!isHCP&&!headerRow.map(cl).includes('Line Items')){
       showError('This jobs export has no Line Items / amount columns, so jobs can\'t be recreated from it. You can still drop it in the customers box to extract the customer list.');
       return;
     }
-    jobsData=isTicket?convertDBTickets(rawObjRows):(isDB?convertDetailBookieJobs(rawObjRows):parseJobsExport(rawObjRows));
+    jobsData=isHCP?convertHCPJobs(rawObjRows):(isTicket?convertDBTickets(rawObjRows):(isDB?convertDetailBookieJobs(rawObjRows):parseJobsExport(rawObjRows)));
     if(!jobsData.length){ showError('No jobs found in this file.'); return; }
     currentKind='jobs';
     convertedRows=jobsPreviewRows(jobsData);
-    sourcePlatformName=isTicket?'Detail Bookie ticket scrape':(isDB?'Detail Bookie jobs':'Jobs export');
+    sourcePlatformName=isHCP?'Housecall Pro jobs':(isTicket?'Detail Bookie ticket scrape':(isDB?'Detail Bookie jobs':'Jobs export'));
     document.getElementById('originName').textContent=sourcePlatformName;
     const paidCents=jobsData.reduce((s,j)=>s+j.paid,0);
     showDetected(sourcePlatformName, jobsData.length, 0);
