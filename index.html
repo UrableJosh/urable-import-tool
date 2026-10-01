@@ -2193,6 +2193,9 @@ function detectPlatform(filename, headers, rawRows){
   if(fn.includes('mobiletechrx')||fn.includes('mtrx')||
      (h.includes('add_date')&&h.includes('category')&&h.includes('street')&&h.includes('name'))) return 'mtrx';
   if(h.includes('instant profile')) return 'squarealt';
+  // Google Calendar + Square booking agenda: everything about the job lives
+  // in one free-text column.
+  if(h.includes('detalle_original')&&h.includes('cliente')) return 'agenda';
   // Housecall Pro customer export: four address blocks and its own flags
   if(h.includes('address_1 street line 1')&&(h.includes('customer is contractor')||h.includes('lifetime value'))) return 'hcpcust';
   // A bought client list: a name, one contact column, a rough address
@@ -2530,7 +2533,167 @@ function convertHCPJobs(data){
   return jobs;
 }
 
-const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template','acuity':'Acuity Scheduling','hcpcust':'Housecall Pro','purchased':'Bought client list'};
+// ─── Agenda Square (Google Calendar + Square bookings) ──────────────────────
+// A Puerto Rico shop runs its book out of Google Calendar with Square taking
+// the payment. Everything about an appointment is crammed into one free-text
+// field: "Name +phone - email Service - duration - $price Vehicle / note".
+// Two files arrive: the expanded appointments, and the recurring series behind
+// them.
+const AGENDA_DUR=/\s*-\s*((?:\d+\s*(?:days?|hours?|minutes?))(?:\s+\d+\s*minutes?)?)\s*(?:-\s*\$\s?([\d,]+(?:\.\d{1,2})?))?/gi;
+const AGENDA_MAKES=/\b(acura|audi|bmw|buick|cadillac|chevy|chevrolet|chrysler|dodge|ram|ford|gmc|honda|hyundai|infinit[iy]|jeep|kia|lexus|lincoln|mazda|mercedes|benz|mini|mitsubishi|nissan|porsche|subaru|tesla|toyota|volkswagen|vw|volvo|rivian|jaguar|land ?rover|range ?rover|genesis|smart|suzuki|elantra|seltos|4runner|jetta|corolla|rav4|highlander|tacoma|tundra|telluride|murano|outlander|sportage|compass|cherokee|gladiator|defender|accent|sorento|cr-?v|x[1-7]|m[34]|q[3-8]|xc\d\d|ex30|glc|k4|ls500|f-?150|raptor|rebel|ridg[el]ine|king ranch|challenger|gti|model [3ysx]|juniper|land cruiser|sierra|silverado|camry|civic|accord)\b/i;
+
+// The same service is typed a dozen ways — "Lavado-descontaminacion- Sellado 3
+// meses Midsize", "Lavado-descontaminacion-Sellado 3 meses Midsize",
+// "Lavado- descontaminacion-Sellado 3 meses Midsize". Fold the punctuation and
+// spacing so they meet, then use whichever spelling the shop used most.
+function agendaServiceKey(n){
+  return cl(n).toLowerCase()
+    .replace(/[‐-―]/g,'-')
+    .replace(/[,]/g,' ')
+    .replace(/\s*-\s*/g,' ')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+function agendaCanonical(rows){
+  const spell={};
+  for(const r of rows){
+    for(const s of agendaParse(r['Detalle_original']).services){
+      const k=agendaServiceKey(s.name); if(!k) continue;
+      (spell[k]=spell[k]||{})[s.name]=(spell[k][s.name]||0)+1;
+    }
+  }
+  const canon={};
+  for(const k in spell){
+    let best=null,bn=-1;
+    for(const v in spell[k]) if(spell[k][v]>bn){bn=spell[k][v];best=v;}
+    canon[k]=best;
+  }
+  return canon;
+}
+
+// Pull the services, their durations and prices, and whatever trails after the
+// last one — usually the vehicle, sometimes a note about the job.
+function agendaParse(detail){
+  let t=cl(detail);
+  // "Name +1 787-123-4567 - email " prefix
+  const ph=t.match(/^.*?\+\s?[\d\s\-()]{7,}\s*-\s*/);
+  if(ph) t=t.slice(ph[0].length);
+  const em=t.match(/^\s*[\w.+-]+@[\w.-]+\s*/);
+  if(em) t=t.slice(em[0].length);
+  const services=[]; let pos=0; AGENDA_DUR.lastIndex=0;
+  let m;
+  while((m=AGENDA_DUR.exec(t))!==null){
+    const nm=t.slice(pos,m.index).replace(/^[\s\-,]+|[\s\-,]+$/g,'');
+    if(nm) services.push({name:nm,duration:m[1],price:m[2]||null});
+    pos=m.index+m[0].length;
+  }
+  let tail=t.slice(pos).trim().replace(/^[\s\-\/]+/,'');
+  // "telluride blanca/ reemplazar ppf bumper" — vehicle first, note after
+  const head=tail.split(/\s*\/\s*/)[0].trim().replace(/^[\s\-]+|[\s\-]+$/g,'');
+  const rest=tail.slice(tail.indexOf(head)+head.length).replace(/^[\s\/\-]+/,'').trim();
+  const looksVehicle=!!head&&(AGENDA_MAKES.test(head)||/\b(19|20)\d{2}\b/.test(head));
+  return {services, vehicle:looksVehicle?head:'', note:looksVehicle?rest:tail};
+}
+
+function agendaPhone(v){
+  const d=cl(v).replace(/\D/g,'');
+  const t=(d.length===11&&d[0]==='1')?d.slice(1):d;
+  return t.length===10?t:'';
+}
+
+// Turn an iCalendar rule into something a person can read on the customer.
+function agendaRecurrence(rules){
+  const r=cl(rules);
+  const m=r.match(/RRULE:([^|]+)/); if(!m) return '';
+  const body=m[1];
+  const freq=(body.match(/FREQ=(\w+)/)||[])[1]||'';
+  const iv=parseInt((body.match(/INTERVAL=(\d+)/)||[])[1]||'1',10);
+  const unit={DAILY:'day',WEEKLY:'week',MONTHLY:'month',YEARLY:'year'}[freq]||freq.toLowerCase();
+  if(!unit) return '';
+  const every=iv===1?('every '+unit):('every '+iv+' '+unit+'s');
+  const skipped=(r.match(/\d{8}T\d{6}Z/g)||[]).length;
+  return 'Repeats '+every+(skipped?(' ('+skipped+' date'+(skipped===1?'':'s')+' skipped)'):'');
+}
+
+// Customers from either file. One row per appointment or series, so the same
+// person appears many times — dedup collapses them.
+function convertAgendaSquare(data){
+  const out=[]; let withVeh=0, withRule=0;
+  for(const r of data){
+    const name=cl(straightenQuotes(r['Cliente'])); if(!name) continue;
+    const p=agendaParse(r['Detalle_original']);
+    const parts=name.split(/\s+/);
+    // Puerto Rican names often carry both surnames; keep everything after the
+    // first word as the last name rather than dropping a parent's name.
+    const first=parts[0], last=parts.slice(1).join(' ');
+    const np=[];
+    const rule=agendaRecurrence(r['Reglas_y_exclusiones']);
+    if(rule){ np.push(rule); withRule++; }
+    const next=cl(r['Proxima_cita_PR']||r['Inicio_PR']);
+    if(next) np.push('Next appointment: '+next.slice(0,10));
+    if(p.services.length) np.push('Books: '+p.services.map(s=>s.name).join(', '));
+    if(p.note) np.push(p.note);
+    if(cl(r['Reserva_Square'])) np.push('Square booking: '+cl(r['Reserva_Square']));
+    if(p.vehicle) withVeh++;
+    const phone=agendaPhone(r['Telefono']);
+    out.push([first,last,'Person','','','','','',countryFor('','',phone),
+      phone,cleanEmail(r['Email']),np.join(' | ').slice(0,1800),p.vehicle]);
+  }
+  const rows=dedup(out);
+  rows._agenda={withVeh,withRule,before:out.length};
+  return rows;
+}
+
+// Appointments → scheduled jobs. These are all in the future: the file is the
+// shop's forward book, not its history.
+function convertAgendaJobs(data){
+  const canon=agendaCanonical(data);
+  const jobs=[]; let noDate=0, noPrice=0, withVeh=0;
+  let d30=0,d90=0,d365=0,beyond=0;
+  const now=Date.now();
+  for(const r of data){
+    const name=cl(r['Cliente']); if(!name) continue;
+    const start=parseJobDate(r['Inicio_PR']);
+    const end=parseJobDate(r['Fin_PR']);
+    if(!start){ noDate++; continue; }
+    const days=(start-now)/86400000;
+    if(days<=30) d30++; if(days<=90) d90++; if(days<=365) d365++; else beyond++;
+    const p=agendaParse(r['Detalle_original']);
+    const names=[], cents=[];
+    for(const s of p.services){
+      names.push(canon[agendaServiceKey(s.name)]||s.name);
+      cents.push(s.price?moneyCents(s.price):0);
+    }
+    if(!names.length){ names.push('Imported service'); cents.push(0); }
+    if(!cents.some(c=>c>0)) noPrice++;
+    if(p.vehicle) withVeh++;
+    const subtotal=cents.reduce((a,b)=>a+b,0);
+    const np=[];
+    if(p.note) np.push(p.note);
+    if(cl(r['Reserva_Square'])) np.push('Square booking: '+cl(r['Reserva_Square']));
+    if(cl(r['Serie_Google'])) np.push('Part of a recurring series in Google Calendar');
+    jobs.push({
+      num:'', status:'scheduled', type:'shop', title:'',
+      customer:{ name:name, email:cleanEmail(r['Email']), phone:agendaPhone(r['Telefono']),
+        a1:'',a2:'',city:'',state:'',zip:'',country:'' },
+      vehicles:p.vehicle?[p.vehicle]:[], vins:[], plates:[],
+      itemType:'automotive',
+      completedAt:null, updatedAt:null,
+      lineItems:names, lineCents:cents, lineCats:names.map(()=>'Imported'),
+      lineSizes:names.map(()=>''),
+      subtotal:subtotal,
+      perLineCents:names.length?Math.floor(subtotal/names.length):subtotal,
+      firstLineCents:names.length?subtotal-Math.floor(subtotal/names.length)*(names.length-1):subtotal,
+      adjustments:[],
+      start:start,end:end||start,dropOff:start,allDay:false,
+      taxed:false, notes:np.join(' | '), total:subtotal, paid:0
+    });
+  }
+  jobs._agenda={noDate,noPrice,withVeh,d30,d90,d365,beyond};
+  return jobs;
+}
+
+const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template','acuity':'Acuity Scheduling','hcpcust':'Housecall Pro','purchased':'Bought client list','agenda':'Google Calendar + Square agenda'};
 
 // One dispatch table, used by the single-file path and the multi-file path
 // alike — so a converter added later can't reach one and miss the other.
@@ -2552,6 +2715,7 @@ function convertCustomerRows(platform, raw, rawObjRows){
   if(platform==='squarealt') return convertSquareAlt(rawObjRows);
   if(platform==='jobsexport') return convertJobsExport(rawObjRows);
   if(platform==='acuity') return convertAcuity(rawObjRows);
+  if(platform==='agenda') return convertAgendaSquare(rawObjRows);
   if(platform==='hcpcust') return convertHCPCustomers(rawObjRows);
   if(platform==='purchased') return convertPurchasedList(rawObjRows);
   if(platform==='urable') return dedup(rawObjRows.map(r=>HEADERS.map(h=>cl(r[h]))).filter(r=>r.some(v=>v)));
@@ -2582,11 +2746,14 @@ function processRaw(raw, filename){
     // Housecall Pro's jobs export also has 'Job #' and 'Customer name', so it
     // has to be recognised before the Urable shape or it is read as one.
     const isHCP=hl.includes('job description')&&hl.includes('job status')&&hl.includes('job revenue');
-    const isUrable=!isHCP&&hl.includes('job #')&&hl.includes('customer name');
+    // The appointments half of the agenda export — the series file has no
+    // start time, so only the expanded appointments become jobs.
+    const isAgenda=hl.includes('detalle_original')&&hl.includes('inicio_pr');
+    const isUrable=!isHCP&&!isAgenda&&hl.includes('job #')&&hl.includes('customer name');
     const isDB=hl.includes('job_status')&&hl.includes('pay_status')&&hl.includes('charged');
     // Detail Bookie BackOffice ticket scrape: one row per invoice line item
     const isTicket=hl.includes('job_id')&&hl.includes('line_no')&&hl.includes('service_name')&&hl.includes('price');
-    if(!isUrable&&!isDB&&!isTicket&&!isHCP){
+    if(!isUrable&&!isDB&&!isTicket&&!isHCP&&!isAgenda){
       showError('This does not look like a supported jobs export. Supported: Urable jobs export, Detail Bookie all-jobs export, Detail Bookie ticket scrape. Send the file to Josh to get the format added.');
       return;
     }
@@ -2596,11 +2763,11 @@ function processRaw(raw, filename){
       showError('This jobs export has no Line Items / amount columns, so jobs can\'t be recreated from it. You can still drop it in the customers box to extract the customer list.');
       return;
     }
-    jobsData=isHCP?convertHCPJobs(rawObjRows):(isTicket?convertDBTickets(rawObjRows):(isDB?convertDetailBookieJobs(rawObjRows):parseJobsExport(rawObjRows)));
+    jobsData=isAgenda?convertAgendaJobs(rawObjRows):(isHCP?convertHCPJobs(rawObjRows):(isTicket?convertDBTickets(rawObjRows):(isDB?convertDetailBookieJobs(rawObjRows):parseJobsExport(rawObjRows))));
     if(!jobsData.length){ showError('No jobs found in this file.'); return; }
     currentKind='jobs';
     convertedRows=jobsPreviewRows(jobsData);
-    sourcePlatformName=isHCP?'Housecall Pro jobs':(isTicket?'Detail Bookie ticket scrape':(isDB?'Detail Bookie jobs':'Jobs export'));
+    sourcePlatformName=isAgenda?'Google Calendar + Square agenda':(isHCP?'Housecall Pro jobs':(isTicket?'Detail Bookie ticket scrape':(isDB?'Detail Bookie jobs':'Jobs export')));
     document.getElementById('originName').textContent=sourcePlatformName;
     const paidCents=jobsData.reduce((s,j)=>s+j.paid,0);
     showDetected(sourcePlatformName, jobsData.length, 0);
