@@ -124,6 +124,8 @@ tbody tr:last-child td{border-bottom:none}
         <span class="platform-tag">Stripe</span>
         <span class="platform-tag">Mobile Tech RX</span>
         <span class="platform-tag">Acuity</span>
+        <span class="platform-tag">Housecall Pro</span>
+        <span class="platform-tag">Google Calendar + Square</span>
         <span class="platform-tag any">+ Any other system</span>
       </div>
     </div>
@@ -161,6 +163,8 @@ tbody tr:last-child td{border-bottom:none}
       <div class="drop-hint">or click to browse &nbsp;&middot;&nbsp; .csv and .xlsx supported</div>
       <div class="platforms">
         <span class="platform-tag">Urable jobs export</span>
+        <span class="platform-tag">Housecall Pro</span>
+        <span class="platform-tag">Google Calendar + Square</span>
         <span class="platform-tag">Detail Bookie</span>
         <span class="platform-tag any">More formats coming</span>
       </div>
@@ -2171,6 +2175,11 @@ function detectPlatform(filename, headers, rawRows){
   // Already in Urable template format (e.g. cleaned by CS/Claude) → pass through
   const hl=headers.map(x=>cl(x).toLowerCase());
   if(hl[0]==='first name'&&hl[1]==='last name'&&hl.includes('item')&&hl.includes('notes')) return 'urable';
+  // Content beats filename. "Agenda_Square_969_citas.csv" contains the word
+  // "square", which the filename rules below would otherwise claim before
+  // anyone looked at the columns.
+  const hjoin=hl.join('|');
+  if(hjoin.includes('detalle_original')&&hjoin.includes('cliente')) return 'agenda';
   if(fn.includes('detail-bookie')||fn.includes('detail_bookie')) return 'detailbookie';
   if(fn.includes('jobber')) return 'jobber';
   if(fn.includes('shopmonkey')||fn.includes('customer-')) return 'shopmonkey';
@@ -2193,9 +2202,6 @@ function detectPlatform(filename, headers, rawRows){
   if(fn.includes('mobiletechrx')||fn.includes('mtrx')||
      (h.includes('add_date')&&h.includes('category')&&h.includes('street')&&h.includes('name'))) return 'mtrx';
   if(h.includes('instant profile')) return 'squarealt';
-  // Google Calendar + Square booking agenda: everything about the job lives
-  // in one free-text column.
-  if(h.includes('detalle_original')&&h.includes('cliente')) return 'agenda';
   // Housecall Pro customer export: four address blocks and its own flags
   if(h.includes('address_1 street line 1')&&(h.includes('customer is contractor')||h.includes('lifetime value'))) return 'hcpcust';
   // A bought client list: a name, one contact column, a rough address
