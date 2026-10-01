@@ -157,10 +157,10 @@ tbody tr:last-child td{border-bottom:none}
     <p class="sub">The full migration: past jobs with dates, vehicles, services, invoice amounts, and notes &mdash; so nothing is left behind in the old system. Requires the API import mode (customers and vehicles are created automatically as part of the job import).</p>
 
     <div class="drop-zone" id="dropZoneJ" onclick="document.getElementById('fileInputJ').click()">
-      <input type="file" id="fileInputJ" accept=".csv,.xlsx,.xls" onchange="handleFile(this.files[0],'jobs')">
+      <input type="file" id="fileInputJ" accept=".csv,.xlsx,.xls" multiple onchange="handleFiles(this.files,'jobs')">
       <div class="drop-icon">&#8679;</div>
       <div class="drop-title">Drop your jobs export here</div>
-      <div class="drop-hint">or click to browse &nbsp;&middot;&nbsp; .csv and .xlsx supported</div>
+      <div class="drop-hint">or click to browse &nbsp;&middot;&nbsp; .csv and .xlsx supported &nbsp;&middot;&nbsp; Google Calendar&nbsp;+&nbsp;Square: drop the appointments and series files together</div>
       <div class="platforms">
         <span class="platform-tag">Urable jobs export</span>
         <span class="platform-tag">Housecall Pro</span>
@@ -1323,10 +1323,41 @@ function processMixedCustomerFiles(parts){
   setImportModeUI();
 }
 
+// Some books come as a pair: the appointments, and the recurring series behind
+// them. The series file is where the repeat rule lives and it names only the
+// customers who have one, so neither file is complete on its own. Take both in
+// the jobs box and the single drop builds everything.
+function processJobsBundle(parts){
+  let appts=null, series=null, unknown=[];
+  for(const p of parts){
+    const sh=shapeRaw(p.raw);
+    const h=sh.headerRow.map(x=>cl(x).toLowerCase()).join('|');
+    if(h.includes('detalle_original')&&h.includes('inicio_pr')) appts={p,sh};
+    else if(h.includes('detalle_original')&&h.includes('proxima_cita_pr')) series={p,sh};
+    else unknown.push(p.name);
+  }
+  if(!appts){
+    showError(series
+      ? 'That is the recurring-series file on its own. It has no appointment times, so it cannot make jobs \u2014 drop it together with the appointments file.'
+      : 'Several files were dropped but none of them is a jobs export the tool knows'+
+        (unknown.length?' ('+unknown.join(', ')+')':'')+'. Drop a single jobs file, or an appointments + series pair.');
+    return;
+  }
+  // The series rules ride along with the appointments through the normal path.
+  agendaSeries=series?series.sh.objRows:null;
+  agendaSeriesName=series?series.p.name:'';
+  expectedKind='jobs';
+  currentFilename=parts.map(p=>p.name).join(' + ');
+  processRaw(appts.p.raw, appts.p.name);
+  agendaSeries=null;
+}
+let agendaSeries=null, agendaSeriesName='';
+
 function processBundle(parts, kind){
   hideError();
+  if(kind==='jobs') return processJobsBundle(parts);
   if(kind&&kind!=='customers'){
-    showError('Multiple files are only supported in the customers box, where a customer / fleet / vehicle set is joined together.');
+    showError('Multiple files are only supported in the customers and jobs boxes, where a set of files belongs together.');
     return;
   }
   const found={}, claimed=new Set();
@@ -2677,7 +2708,16 @@ function convertAgendaJobs(data){
                   g<38?'monthly': g<52?'every 6 weeks': g<75?'every 2 months':
                   g<135?'every 3 months': g<225?'every 6 months':'yearly';
   }
-  const jobs=[]; let noDate=0, noPrice=0, withVeh=0, tagged=0;
+  // When the series file is dropped alongside, its RRULE is authoritative —
+  // better than a cadence guessed from the gaps between instances.
+  const stated={}, nextAppt={};
+  for(const r of (agendaSeries||[])){
+    const sid=cl(r['Serie_Google']); if(!sid) continue;
+    const txt=agendaRecurrence(r['Reglas_y_exclusiones']);
+    if(txt) stated[sid]=txt;
+    const n=cl(r['Proxima_cita_PR']); if(n) nextAppt[sid]=n.slice(0,10);
+  }
+  const jobs=[]; let noDate=0, noPrice=0, withVeh=0, tagged=0, stated_n=0;
   let d30=0,d90=0,d365=0,beyond=0;
   const now=Date.now();
   for(const r of data){
@@ -2697,23 +2737,34 @@ function convertAgendaJobs(data){
     if(!cents.some(c=>c>0)) noPrice++;
     if(p.vehicle) withVeh++;
     const subtotal=cents.reduce((a,b)=>a+b,0);
+    const sid0=cl(r['Serie_Google']);
+    const sidNote=[(stated[sid0]||(cadence[sid0]?('Repeats '+cadence[sid0]):'')),
+                   nextAppt[sid0]?('Next appointment: '+nextAppt[sid0]):''].filter(Boolean).join(' | ');
     const np=[];
     if(p.note) np.push(p.note);
     if(cl(r['Reserva_Square'])) np.push('Square booking: '+cl(r['Reserva_Square']));
     const sid=cl(r['Serie_Google']);
     if(sid){
+      // "Repeats every 6 months (2 dates skipped)" from the series file, else
+      // the cadence inferred from this series' own dates.
+      const said=stated[sid]||'';
+      if(said) stated_n++;
+      const how=said?said.replace(/^Repeats\s+/i,''):cadence[sid]||'';
       if(lastOfSeries[sid]===start){
         np.push('LAST of this recurring series \u2014 set this job to repeat'+
-                (cadence[sid]?' '+cadence[sid]:'')+' to carry the series forward');
+                (how?' '+how:'')+' to carry the series forward');
         tagged++;
       } else {
-        np.push('Part of a recurring series'+(cadence[sid]?' ('+cadence[sid]+')':''));
+        np.push('Part of a recurring series'+(how?' ('+how+')':''));
       }
     }
     jobs.push({
       num:'', status:'scheduled', type:'shop', title:'',
       customer:{ name:name, email:cleanEmail(r['Email']), phone:agendaPhone(r['Telefono']),
-        a1:'',a2:'',city:'',state:'',zip:'',country:'' },
+        a1:'',a2:'',city:'',state:'',zip:'',country:'',
+        // so a jobs-only drop still leaves the customer described, not bare
+        notes:[sidNote, p.services.length?('Books: '+p.services.map(x=>x.name).join(', ')):'']
+          .filter(Boolean).join(' | ').slice(0,1800) },
       vehicles:p.vehicle?[p.vehicle]:[], vins:[], plates:[],
       itemType:'automotive',
       completedAt:null, updatedAt:null,
@@ -2727,7 +2778,8 @@ function convertAgendaJobs(data){
       taxed:false, notes:np.join(' | '), total:subtotal, paid:0
     });
   }
-  jobs._agenda={noDate,noPrice,withVeh,d30,d90,d365,beyond,tagged};
+  jobs._agenda={noDate,noPrice,withVeh,d30,d90,d365,beyond,tagged,stated:stated_n,
+    seriesFile:agendaSeriesName||''};
   return jobs;
 }
 
@@ -2813,7 +2865,9 @@ function processRaw(raw, filename){
     document.getElementById('detStats').textContent=ag
       ? (jobsData.length.toLocaleString()+' scheduled jobs \u00b7 '+ag.d90.toLocaleString()+
          ' in the next 90 days \u00b7 '+ag.beyond.toLocaleString()+' more than a year out \u00b7 '+
-         ag.tagged.toLocaleString()+' marked as the last of a repeating series')
+         ag.tagged.toLocaleString()+' marked as the last of a repeating series'+
+         (ag.seriesFile?(' \u00b7 repeat rules read from '+ag.seriesFile)
+                       :' \u00b7 drop the series file alongside to use the shop\u2019s own repeat rules'))
       : (jobsData.length.toLocaleString()+' jobs \u00b7 $'+(paidCents/100).toLocaleString(undefined,{maximumFractionDigits:0})+' historical payments');
     showPreview(convertedRows);
     setImportModeUI();
@@ -4257,6 +4311,9 @@ async function importJobsRun(key){
     if(custMap[ck]){ tick('Matching customers'); return; }
     const parts=c.name.split(/\s+/);
     const payload={firstName:(parts[0]||'Customer').replace(/^\w/,x=>x.toUpperCase()),type:'person',status:'existing',origin:'Imported — jobs history'};
+    // A source whose jobs carry context about the customer (how often they
+    // book, what they book) should not leave the customer record blank.
+    if(c.notes&&cl(c.notes)) payload.notes=cl(c.notes);
     const last=parts.slice(1).join(' ');
     if(last) payload.lastName=last.replace(/^\w/,x=>x.toUpperCase());
     if(c.email) payload.emails=[{label:'Main',value:c.email}];
@@ -4882,7 +4939,7 @@ for(const [id,kind] of [['dropZone','customers'],['dropZoneP','products'],['drop
     dz.classList.remove('drag-over');
     const dropped=e.dataTransfer.files;
     if(!dropped||!dropped.length) return;
-    if(kind==='customers') handleFiles(dropped,kind); else handleFile(dropped[0],kind);
+    if(kind==='products') handleFile(dropped[0],kind); else handleFiles(dropped,kind);
   });
 }
 
