@@ -2364,8 +2364,16 @@ function convertHCPCustomers(data){
   const out=[]; let dns=0, extraAddr=0, companies=0, fromDisplay=0;
   for(const r of data){
     let first=cl(straightenQuotes(r['First Name'])), last=cl(straightenQuotes(r['Last Name']));
+    const dn=cl(straightenQuotes(r['Display Name']));
+    // "Jackaline Rutter" with only the surname in its own column would import
+    // as "Rutter", and then a job booked under the full name looks like a
+    // different person. Take the display name whenever it says more.
+    if(dn&&(!first||!last)&&dn.split(/\s+/).length>((first?1:0)+(last?1:0))){
+      const p=dn.split(/\s+/);
+      first=p.slice(0,-1).join(' '); last=p[p.length-1];
+      fromDisplay++;
+    }
     if(!first&&!last){
-      const dn=cl(straightenQuotes(r['Display Name']));
       if(!dn&&!cl(r['Mobile Number'])&&!cl(r['Email'])) continue;
       const p=dn.split(/\s+/);
       first=p.length>1?p.slice(0,-1).join(' '):dn; last=p.length>1?p[p.length-1]:'';
@@ -4109,7 +4117,7 @@ async function importJobsRun(key){
   const [exCust,exItems,exProds]=await Promise.all([
     pageAll('customers'), pageAll('items'), pageAll('products')
   ]);
-  const exIndex={};
+  const exIndex={}, exByEmail={}, exByPhone={};
   for(const c of exCust){
     const nm=normNm((c.firstName||'')+' '+(c.lastName||''));
     const phones=(c.phoneNumbers||[]).map(p=>normPhone(p.value)).filter(Boolean);
@@ -4118,10 +4126,27 @@ async function importJobsRun(key){
     for(const e of emails) if(!exIndex[e+'|'+nm]) exIndex[e+'|'+nm]=c.id;
     // name-only fallback: lets job rows with no phone/email find their customer
     if(nm&&!exIndex['|'+nm]) exIndex['|'+nm]=c.id;
+    for(const e of emails) (exByEmail[e]=exByEmail[e]||[]).push(c.id);
+    for(const p of phones) (exByPhone[p]=exByPhone[p]||[]).push(c.id);
   }
+  let rescuedCust=0;
   for(const ck of Object.keys(uniqueCust)){
-    if(exIndex[ck]){ custMap[ck]=exIndex[ck]; reusedCust++; }
+    if(exIndex[ck]){ custMap[ck]=exIndex[ck]; reusedCust++; continue; }
+    // Every key above pins the NAME, and a jobs export often names the business
+    // where the customer list names the person — Housecall Pro books 309 of
+    // ACEE's 882 jobs under "Gearworks Automotive" while the customer is David
+    // Scott. Those rows look like new people and the run quietly doubles the
+    // book. An email is effectively unique, so fall back to it when exactly one
+    // customer on the account carries it, then to a phone on the same terms.
+    // Uniqueness is the whole safeguard: two people really do share a phone.
+    const c=uniqueCust[ck]||{};
+    const em=String(c.email||'').toLowerCase(), ph=normPhone(c.phone);
+    let id=null;
+    if(em&&exByEmail[em]&&exByEmail[em].length===1) id=exByEmail[em][0];
+    else if(ph&&exByPhone[ph]&&exByPhone[ph].length===1) id=exByPhone[ph][0];
+    if(id){ custMap[ck]=id; reusedCust++; rescuedCust++; }
   }
+  if(rescuedCust) logLine(rescuedCust.toLocaleString()+' job customer(s) were matched to an existing record by email or phone because the job names them differently \u2014 a business name against a person, usually. Without this they would have been created again.');
   // existing vehicles of matched customers → reuse
   const idToCks={};
   for(const [ck,id] of Object.entries(custMap)){ (idToCks[id]=idToCks[id]||[]).push(ck); }
