@@ -2663,6 +2663,15 @@ function agendaRecurrence(rules){
 // Customers from either file. One row per appointment or series, so the same
 // person appears many times — dedup collapses them.
 function convertAgendaSquare(data){
+  // One row per appointment, so a weekly customer arrives 90 times and every
+  // one of them wants to add its own date. Keep only the soonest per series —
+  // 90 "Next appointment" lines pushed the real notes past the length cap.
+  const firstOf={};
+  for(const r of data){
+    const sid=cl(r['Serie_Google']); if(!sid) continue;
+    const t=cl(r['Inicio_PR']); if(!t) continue;
+    if(!firstOf[sid]||t<firstOf[sid]) firstOf[sid]=t;
+  }
   const out=[]; let withVeh=0, withRule=0;
   for(const r of data){
     const name=cl(straightenQuotes(r['Cliente'])); if(!name) continue;
@@ -2674,7 +2683,8 @@ function convertAgendaSquare(data){
     const np=[];
     const rule=agendaRecurrence(r['Reglas_y_exclusiones']);
     if(rule){ np.push(rule); withRule++; }
-    const next=cl(r['Proxima_cita_PR']||r['Inicio_PR']);
+    const sid=cl(r['Serie_Google']), prox=cl(r['Proxima_cita_PR']), ini=cl(r['Inicio_PR']);
+    const next=prox||((!sid||firstOf[sid]===ini)?ini:'');
     if(next) np.push('Next appointment: '+next.slice(0,10));
     if(p.services.length) np.push('Books: '+p.services.map(s=>s.name).join(', '));
     if(p.note) np.push(p.note);
