@@ -2854,7 +2854,13 @@ function processRaw(raw, filename){
     // Detail Bookie BackOffice ticket scrape: one row per invoice line item
     const isTicket=hl.includes('job_id')&&hl.includes('line_no')&&hl.includes('service_name')&&hl.includes('price');
     if(!isUrable&&!isDB&&!isTicket&&!isHCP&&!isAgenda){
-      showError('This does not look like a supported jobs export. Supported: Urable jobs export, Detail Bookie all-jobs export, Detail Bookie ticket scrape. Send the file to Josh to get the format added.');
+      // The recurring-series half of an agenda export has the same detail
+      // column but no times, so say what it is rather than calling it unknown.
+      if(hl.includes('detalle_original')&&hl.includes('proxima_cita_pr')){
+        showError('That is the recurring-series file on its own. It has no appointment times, so it cannot make jobs \u2014 drop it together with the appointments file (Agenda_Square_..._citas).');
+        return;
+      }
+      showError('This does not look like a supported jobs export. Supported: Urable jobs export, Housecall Pro jobs export, Google Calendar + Square agenda (appointments + series together), Detail Bookie all-jobs export, Detail Bookie ticket scrape. Send the file to Josh to get the format added.');
       return;
     }
     rawObjRows=raw.slice(1).map(r=>{let o={};headerRow.forEach((h,i)=>{o[cl(h)]=r[i]||'';});return o;})
