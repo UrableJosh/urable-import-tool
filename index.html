@@ -1738,40 +1738,86 @@ function convertFielddProducts(data){
   return out;
 }
 
+const HCP_SIZE=/\b(sedan|small suv|standard suv|large suv|xl vehicle|vans?|pickups?|pickup trucks?|mini|sports? car|3-?row|motorcycle|small\/standard)\b/i;
+const HCP_GIFT=/\bgift\b/i;
+// A trade name is one name. Urable has no company column, so splitting
+// "Bailey Auto Group" into Bailey Auto / Group loses the shop's own label.
+const HCP_ORG=/\b(auto|automotive|roofing|repair|sales|detailing|motors|dealership|tint|plumbing|heating|landscape|moving|millwork|solar|insurance|construction|group|llc|inc)\b/i;
+// Dealerships and trade partners Amos wants as business accounts. Narrow on
+// purpose: Anchor Roofing is booked to the individuals and stays a person.
+const HCP_DEALER=/\b(auto group|auto sales|automotive|dealership|auto body|motors|hail ?& ?dent)\b/i;
 function convertHCPPricebook(data){
   // Housecall Pro pricebook export. Some exports scatter description bullets
   // onto their own rows (text lands in the first column) — attach to previous.
-  let out=[], seen=new Set(), extras=[];
+  const rows=[]; let extras=[], dropped=0;
   function flushExtras(){
-    if(out.length&&extras.length){
-      out[out.length-1][3]=[out[out.length-1][3],extras.join(' ')].filter(Boolean).join(' ');
+    if(rows.length&&extras.length){
+      rows[rows.length-1].desc=[rows[rows.length-1].desc,extras.join(' ')].filter(Boolean).join(' ');
     }
     extras=[];
   }
-  for(let r of data){
-    let name=cl(r['name']);
+  for(const r of data){
+    const name=cl(r['name']);
     if(!name){
-      // continuation row: whatever text exists goes to the previous description
       const txt=Object.values(r).map(cl).filter(Boolean).join(' ');
       if(txt) extras.push(txt);
       continue;
     }
     flushExtras();
-    // Quote-based services legitimately have no price → import as $0.00
-    let price=cleanPrice(r['price']);
-    if(price===null) price=0;
-    let cat=cl(r['category'])||'';
-    const sub=cl(r['subcategory_1']||'');
-    if(sub) cat=cat?(cat+' - '+sub):sub;
-    let desc=cl(r['description']).replace(/\s*\n\s*/g,' ');
-    let cost=cleanPrice(r['cost']);
-    let taxable=cl(r['taxable']).toLowerCase()==='true'?'true':'false';
-    let key=(name+'|'+desc+'|'+price+'|'+cat).toLowerCase();
-    if(seen.has(key)) continue;
-    seen.add(key);
-    out.push(['service',cat,name,desc,'',fmtPrice(price),(cost&&cost>0)?fmtPrice(cost):'',taxable,'','']);
+    const cat=cl(r['category'])||'', sub=cl(r['subcategory_1']||'');
+    // Gift certificates are stored value, not work done to a vehicle. Urable
+    // has its own eGift Cards for this, so they do not belong in the catalog.
+    if(HCP_GIFT.test(cat+' '+sub+' '+name)){ dropped++; continue; }
+    let price=cleanPrice(r['price']); if(price===null) price=0;   // quote-based → $0.00
+    const cost=cleanPrice(r['cost']);
+    rows.push({name,cat,sub,price,cost,
+      desc:cl(r['description']).replace(/\s*\n\s*/g,' '),
+      taxable:cl(r['taxable']).toLowerCase()==='true'?'true':'false'});
   }
   flushExtras();
+
+  // Housecall Pro has no tiered pricing, so a shop duplicates a service once
+  // per vehicle size and files the copies under one subcategory. Urable prices
+  // a single service at several labelled points, which is the whole reason the
+  // duplicates existed — fold them back together. Only where the names really
+  // are sizes: "Paint Correction" holds seven different services, not seven
+  // sizes of one.
+  const bySub={}; const order=[];
+  for(const r of rows){
+    const k=r.cat+'\u0000'+r.sub;
+    if(!bySub[k]){ bySub[k]=[]; order.push(k); }
+    bySub[k].push(r);
+  }
+  const out=[]; let folded=0, foldedInto=0;
+  for(const k of order){
+    const v=bySub[k];
+    const sized=v.filter(r=>HCP_SIZE.test(r.name)).length;
+    const sizeGroup = v[0].sub && v.length>1 && sized>=Math.ceil(v.length/2);
+    if(!sizeGroup){
+      for(const r of v){
+        // One level of category. Housecall Pro's subcategory is kept in the
+        // description so the grouping survives without 23 categories.
+        const desc=[r.sub,r.desc].filter(Boolean).join(' \u2014 ');
+        out.push(['service',r.cat||'Imported',r.name,desc,'',fmtPrice(r.price),
+                  (r.cost&&r.cost>0)?fmtPrice(r.cost):'',r.taxable,'','']);
+      }
+      continue;
+    }
+    folded++; foldedInto+=v.length;
+    // The label is the size in brackets where there is one, else the whole
+    // name — never a size we made up.
+    const labels=[], prices=[], costs=[];
+    for(const r of v){
+      const m=/\(([^)]+)\)\s*$/.exec(r.name);
+      labels.push((m&&HCP_SIZE.test(m[1]))?m[1].trim():r.name);
+      prices.push(fmtPrice(r.price));
+      costs.push((r.cost&&r.cost>0)?fmtPrice(r.cost):'');
+    }
+    const desc=v.map(r=>r.desc).find(Boolean)||'';
+    out.push(['service',v[0].cat,v[0].sub,desc,labels.join('; '),prices.join('; '),
+              costs.some(Boolean)?costs.join('; '):'',v[0].taxable,'','']);
+  }
+  out._hcpprod={dropped,folded,foldedInto,before:rows.length+dropped};
   return out;
 }
 
@@ -2361,7 +2407,7 @@ function handleFiles(list, kind){
 // Customer export: one row per customer, up to four addresses, and the shop's
 // own flags (do-not-service, marketing consent) that are worth keeping.
 function convertHCPCustomers(data){
-  const out=[]; let dns=0, extraAddr=0, companies=0, fromDisplay=0;
+  const out=[]; let dns=0, extraAddr=0, companies=0, fromDisplay=0, businesses=0;
   for(const r of data){
     let first=cl(straightenQuotes(r['First Name'])), last=cl(straightenQuotes(r['Last Name']));
     const dn=cl(straightenQuotes(r['Display Name']));
@@ -2382,13 +2428,23 @@ function convertHCPCustomers(data){
     // Housecall Pro keeps its own business/homeowner flag. Trust it rather than
     // inferring from the Company column, which usually just records where
     // someone works — 21 of ACEE's 453 had a company, only 3 were businesses.
-    const ctype=cl(r['Customer Type']).toLowerCase()==='business'?'Business':'Person';
+    const company=cl(r['Company']);
+    // Housecall Pro's own flag catches only three. The real tell is the shop
+    // having renamed the record after the business — "Cjay" at Cutting Edge
+    // Auto shows as "Cutting Edge Auto", and that is what his jobs are booked
+    // under. Someone who merely works somewhere keeps their own display name,
+    // so Wil Dressor at Anchor Roofing stays a person.
+    const dnIsCompany = !!(dn&&company&&
+      (dn.toLowerCase()===company.toLowerCase()||
+       dn.toLowerCase().replace(/[^a-z0-9]/g,'').startsWith(company.toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,12))));
+    const ctype=(cl(r['Customer Type']).toLowerCase()==='business'||dnIsCompany||
+                 (dn&&HCP_DEALER.test(dn)))?'Business':'Person';
+    if(ctype==='Business') businesses++;
     const phones=[r['Mobile Number'],r['Home Number'],r['Work Number']].map(usPhone).filter(Boolean);
     const emails=[cl(r['Email'])].concat(cl(r['Additional Emails']).split(/[;,]/))
       .map(cleanEmail).filter(Boolean);
     const np=[];
     if(cl(r['Do Not Service']).toLowerCase()==='true'){ np.push('DO NOT SERVICE (flagged in Housecall Pro)'); dns++; }
-    const company=cl(r['Company']);
     if(company){ np.push('Company: '+company+(cl(r['Role'])?' ('+cl(r['Role'])+')':'')); companies++; }
     if(cl(r['Notes'])) np.push(cl(r['Notes']).replace(/\s*\n\s*/g,' '));
     const tags=cl(r['Tags']).replace(/['‘’]/g,'').trim();
@@ -2409,6 +2465,7 @@ function convertHCPCustomers(data){
     for(const e of emails.slice(1)) np.push('Alt email: '+e);
     if(cl(r['SMS marketing consent']).toLowerCase()==='opted-out') np.push('SMS marketing: opted out');
     if(cl(r['Email marketing consent']).toLowerCase()==='opted-out') np.push('Email marketing: opted out');
+    if(dn&&(ctype==='Business'||HCP_ORG.test(dn))){ first=dn; last=''; }
     const st=cl(r['Address_1 State']), zip=cl(r['Address_1 Postal Code']);
     // Street lines can carry a newline typed into the box; flatten them or the
     // CSV row breaks in two.
@@ -2418,7 +2475,7 @@ function convertHCPCustomers(data){
       phones[0]||'',emails[0]||'',np.join(' | ').slice(0,1800),'']);
   }
   const rows=dedup(out);
-  rows._hcpcust={dns,extraAddr,companies,fromDisplay,before:out.length};
+  rows._hcpcust={dns,extraAddr,companies,fromDisplay,businesses,before:out.length};
   return rows;
 }
 
@@ -2522,12 +2579,18 @@ function convertPurchasedList(data){
 function convertHCPJobs(data){
   const STATUS={'completed':'completed','scheduled':'scheduled','in progress':'in progress',
     'unscheduled':'quote','canceled':'canceled','cancelled':'canceled','pro canceled':'canceled'};
-  const jobs=[]; let noName=0, mismatch=0;
+  const jobs=[]; let noName=0, mismatch=0, discounted=0, discountCents=0, memberships=0;
   for(const r of data){
     const name=cl(r['Customer name']); if(!name){ noName++; continue; }
     // Housecall Pro writes the job number as ="123" so Excel keeps it as text.
     const num=cl(r['Job #']).replace(/^=/,'').replace(/"/g,'').trim();
-    const desc=cl(r['Job description']).replace(/\s*\n\s*/g,' ')||'Imported service';
+    let desc=cl(r['Job description']).replace(/\s*\n\s*/g,' ')||'Imported service';
+    // "Visit #1" ... "Visit #12" are the instalments of a membership. Ten or
+    // twelve one-off services named after a counter is noise in the catalog;
+    // the shop sets the membership up as a subscription and these become its
+    // history. The original number stays in the job notes.
+    const visit=/^visit\s*#?\s*(\d+)$/i.exec(desc);
+    if(visit){ desc='Membership Visit'; memberships++; }
     // "Job revenue" is what the shop actually billed. "Job amount" is the
     // pre-adjustment figure and the two disagree on 213 of ACEE's 882 jobs,
     // with the discount column reconciling neither — so revenue is the honest
@@ -2537,12 +2600,18 @@ function convertHCPJobs(data){
     const paid=moneyCents(r['Paid amount']);
     const disc=moneyCents(r['Discount amount']);
     const total=revenue||amount;
+    // Revenue is the basis. Urable computes total = lines - discounts, so to
+    // land on revenue AND still carry the discount the line has to hold
+    // revenue + discount. That gross appears nowhere in Housecall Pro — it is
+    // the arithmetic consequence of wanting both, and worth saying out loud.
+    const lineCents=total+(disc>0?disc:0);
     const start=parseJobDate(r['Job scheduled start date'])||parseJobDate(r['Job created date']);
     const comp=parseJobDate(r['Job completed date']);
     const [a1,city,state,zip]=splitLooseAddress(r['Address']);
     const np=[];
     if(amount&&amount!==total){ np.push('Housecall Pro job amount: '+fmtPrice(amount/100)); mismatch++; }
-    if(disc>0) np.push('Housecall Pro discount: '+fmtPrice(disc/100));
+    if(disc>0){ discounted++; discountCents+=disc; }
+    if(visit) np.push('Housecall Pro: Visit #'+visit[1]+' of a membership');
     if(cl(r['Assigned employees'])) np.push('Assigned: '+cl(r['Assigned employees']));
     if(cl(r['Job tags'])) np.push('Job tags: '+cl(r['Job tags']));
     const seg=parseInt(cl(r['Segments'])||'1',10);
@@ -2561,20 +2630,20 @@ function convertHCPJobs(data){
       completedAt:comp,
       updatedAt:comp||start,
       lineItems:[desc],
-      lineCents:[total],
+      lineCents:[lineCents],
       lineCats:['Imported'],
       lineSizes:[''],
-      subtotal:total,
-      perLineCents:total,
-      firstLineCents:total,
-      adjustments:[],
+      subtotal:lineCents,
+      perLineCents:lineCents,
+      firstLineCents:lineCents,
+      adjustments:disc>0?[{name:'Housecall Pro discount',cents:disc}]:[],
       start:start,end:comp||start,dropOff:start,allDay:false,
       taxed:false,
       notes:np.join(' | '),
       total:total,paid:paid
     });
   }
-  jobs._hcp={noName,mismatch};
+  jobs._hcp={noName,mismatch,discounted,discountCents,memberships};
   return jobs;
 }
 
@@ -4534,7 +4603,7 @@ async function importJobsRun(key){
       // Jobs require at least one item — create a placeholder vehicle once per customer
       const pk=ck+'|__placeholder__';
       if(!itemMap[pk]){
-        const r=await apiFetch('/v1/items',{method:'POST',body:JSON.stringify({customerId:custId,name:'Vehicle (imported)',type:'automotive',industry:selectedIndustry()})},key);
+        const r=await apiFetch('/v1/items',{method:'POST',body:JSON.stringify({customerId:custId,name:'ZZZ \u2014 PLACEHOLDER, replace with real vehicle',type:'automotive',industry:selectedIndustry()})},key);
         if(r.ok&&r.body&&r.body.success) itemMap[pk]=r.body.data.id;
       }
       if(itemMap[pk]) itemIds=[itemMap[pk]];
