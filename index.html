@@ -4250,13 +4250,20 @@ async function importJobsRun(key){
   ]);
   const exIndex={}, exByEmail={}, exByPhone={};
   for(const c of exCust){
-    const nm=normNm((c.firstName||'')+' '+(c.lastName||''));
+    // Urable echoes the first name into the last for a one-name customer, so
+    // "Pierre" comes back as Pierre Pierre. Index both or the next run treats
+    // its own record as somebody new.
+    const nms=[normNm((c.firstName||'')+' '+(c.lastName||''))];
+    if(c.firstName&&c.lastName&&normNm(c.firstName)===normNm(c.lastName)) nms.push(normNm(c.firstName));
+    const nm=nms[0];
     const phones=(c.phoneNumbers||[]).map(p=>normPhone(p.value)).filter(Boolean);
     const emails=(c.emails||[]).map(e=>String(e.value||'').toLowerCase()).filter(Boolean);
-    for(const p of phones) if(!exIndex[p+'|'+nm]) exIndex[p+'|'+nm]=c.id;
-    for(const e of emails) if(!exIndex[e+'|'+nm]) exIndex[e+'|'+nm]=c.id;
-    // name-only fallback: lets job rows with no phone/email find their customer
-    if(nm&&!exIndex['|'+nm]) exIndex['|'+nm]=c.id;
+    for(const n2 of nms){
+      for(const p of phones) if(!exIndex[p+'|'+n2]) exIndex[p+'|'+n2]=c.id;
+      for(const e of emails) if(!exIndex[e+'|'+n2]) exIndex[e+'|'+n2]=c.id;
+      // name-only fallback: lets job rows with no phone/email find their customer
+      if(n2&&!exIndex['|'+n2]) exIndex['|'+n2]=c.id;
+    }
     for(const e of emails) (exByEmail[e]=exByEmail[e]||[]).push(c.id);
     for(const p of phones) (exByPhone[p]=exByPhone[p]||[]).push(c.id);
   }
@@ -4847,11 +4854,19 @@ async function startImport(){
       } else {
         // same rule the jobs import uses: an identifier alone is not enough,
         // because households share a phone — the name has to agree too
-        const nm=nrm((rec.firstName||'')+' '+(rec.lastName||''));
+        // Urable echoes the first name into the last when a customer has only
+        // one: "Pierre" is stored as Pierre Pierre. Index both spellings or a
+        // second run reads its own work as a stranger and files everyone
+        // again — which is how 38 duplicates appeared on ACEE's re-run.
+        const nms=[nrm((rec.firstName||'')+' '+(rec.lastName||''))];
+        if(rec.firstName&&rec.lastName&&nrm(rec.firstName)===nrm(rec.lastName)) nms.push(nrm(rec.firstName));
+        const nm=nms[0];
         const phones=(rec.phoneNumbers||[]).map(p=>digits(p.value)).filter(Boolean);
         const emails=(rec.emails||[]).map(e=>nrm(e.value)).filter(Boolean);
-        for(const d of phones) seenIdx[d+'|'+nm]=rec.id;
-        for(const v of emails) seenIdx[v+'|'+nm]=rec.id;
+        for(const n2 of nms){
+          for(const d of phones) if(!seenIdx[d+'|'+n2]) seenIdx[d+'|'+n2]=rec.id;
+          for(const v of emails) if(!seenIdx[v+'|'+n2]) seenIdx[v+'|'+n2]=rec.id;
+        }
         if(nm){
           // Name-only is the last resort, and only safe while the name is
           // unique in the account. Count every holder of it so an ambiguous
