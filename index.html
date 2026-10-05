@@ -2613,6 +2613,9 @@ function convertHCPJobs(data){
     // twelve one-off services named after a counter is noise in the catalog;
     // the shop sets the membership up as a subscription and these become its
     // history. The original number stays in the job notes.
+    // What the shop called this job. It becomes the title, so the original
+    // wording survives even where the line item is renamed below.
+    const original=desc;
     const visit=/^visit\s*#?\s*(\d+)$/i.exec(desc);
     if(visit){ desc='Membership Visit'; memberships++; }
     // "Job revenue" is what the shop actually billed. "Job amount" is the
@@ -2651,7 +2654,12 @@ function convertHCPJobs(data){
       // only where there is one. Urable refuses a field job with nowhere
       // to go, and it refuses the whole job, not just the location.
       type:hasAddr?'field':'shop',
-      title:'',
+      // Without a title Urable names the job after the vehicle, and every
+      // Housecall Pro job hangs off the same placeholder — so a whole history
+      // came through called "ZZZ — PLACEHOLDER". The shop's own description is
+      // what belongs here: 128 distinct ones across the 882 jobs.
+      title:(original&&original!=='Imported service')?original
+            :(cl(r['Job tags'])?cl(r['Job tags']).split(',')[0].trim():'Imported job'),
       customer:{ name:name, email:cleanEmail(r['Customer email']),
         phone:usPhone(r['Customer mobile number']),
         a1:a1,a2:'',city:city,state:state,zip:zip,country:countryFor(state,zip,'') },
