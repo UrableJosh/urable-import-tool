@@ -2579,7 +2579,19 @@ function convertPurchasedList(data){
 function convertHCPJobs(data){
   const STATUS={'completed':'completed','scheduled':'scheduled','in progress':'in progress',
     'unscheduled':'quote','canceled':'canceled','cancelled':'canceled','pro canceled':'canceled'};
-  const jobs=[]; let noName=0, mismatch=0, discounted=0, discountCents=0, memberships=0;
+  // Urable refuses a field job with nowhere to go — and refuses the whole job,
+  // not just the location. A mobile shop's export therefore cannot be marked
+  // field throughout: 12 of ACEE's 882 were rejected outright on the first run.
+  // An address on any row for a customer is enough, since the job inherits the
+  // customer's location, so only fall back to a shop job when that customer
+  // has no address anywhere in the file.
+  const addrKnown={};
+  for(const r of data){
+    if(!cl(r['Address'])) continue;
+    const k=cleanEmail(r['Customer email'])||usPhone(r['Customer mobile number'])||cl(r['Customer name']).toLowerCase();
+    if(k) addrKnown[k]=true;
+  }
+  const jobs=[]; let noName=0, mismatch=0, discounted=0, discountCents=0, memberships=0, deskbound=0;
   for(const r of data){
     const name=cl(r['Customer name']); if(!name){ noName++; continue; }
     // Housecall Pro writes the job number as ="123" so Excel keeps it as text.
@@ -2608,6 +2620,9 @@ function convertHCPJobs(data){
     const start=parseJobDate(r['Job scheduled start date'])||parseJobDate(r['Job created date']);
     const comp=parseJobDate(r['Job completed date']);
     const [a1,city,state,zip]=splitLooseAddress(r['Address']);
+    const ckey=cleanEmail(r['Customer email'])||usPhone(r['Customer mobile number'])||cl(r['Customer name']).toLowerCase();
+    const hasAddr=!!(a1||addrKnown[ckey]);
+    if(!hasAddr) deskbound++;
     const np=[];
     if(amount&&amount!==total){ np.push('Housecall Pro job amount: '+fmtPrice(amount/100)); mismatch++; }
     if(disc>0){ discounted++; discountCents+=disc; }
@@ -2620,7 +2635,10 @@ function convertHCPJobs(data){
     jobs.push({
       num:num,
       status:status,
-      type:'field',          // ACEE is mobile: the work happens at the address
+      // Mobile shop, so the work happens at the customer's address — but
+      // only where there is one. Urable refuses a field job with nowhere
+      // to go, and it refuses the whole job, not just the location.
+      type:hasAddr?'field':'shop',
       title:'',
       customer:{ name:name, email:cleanEmail(r['Customer email']),
         phone:usPhone(r['Customer mobile number']),
@@ -2643,7 +2661,7 @@ function convertHCPJobs(data){
       total:total,paid:paid
     });
   }
-  jobs._hcp={noName,mismatch,discounted,discountCents,memberships};
+  jobs._hcp={noName,mismatch,discounted,discountCents,memberships,deskbound};
   return jobs;
 }
 
