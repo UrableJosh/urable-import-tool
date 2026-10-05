@@ -1740,6 +1740,7 @@ function convertFielddProducts(data){
 
 const HCP_SIZE=/\b(sedan|small suv|standard suv|large suv|xl vehicle|vans?|pickups?|pickup trucks?|mini|sports? car|3-?row|motorcycle|small\/standard)\b/i;
 const HCP_GIFT=/\bgift\b/i;
+const HCP_PLACEHOLDER_VEHICLE='ZZZ \u2014 PLACEHOLDER, replace with real vehicle';
 // A trade name is one name. Urable has no company column, so splitting
 // "Bailey Auto Group" into Bailey Auto / Group loses the shop's own label.
 const HCP_ORG=/\b(auto|automotive|roofing|repair|sales|detailing|motors|dealership|tint|plumbing|heating|landscape|moving|millwork|solar|insurance|construction|group|llc|inc)\b/i;
@@ -2472,7 +2473,13 @@ function convertHCPCustomers(data){
     const flat=v=>cl(v).replace(/\s*\n\s*/g,' ').replace(/\s{2,}/g,' ');
     out.push([first,last,ctype,flat(r['Address_1 Street Line 1']),flat(r['Address_1 Street Line 2']),
       flat(r['Address_1 City']),st,zip,countryFor(st,zip,phones[0]||''),
-      phones[0]||'',emails[0]||'',np.join(' | ').slice(0,1800),'']);
+      phones[0]||'',emails[0]||'',np.join(' | ').slice(0,1800),
+      // Housecall Pro tracks no vehicles, and Urable hangs everything off one.
+      // Give every contact the same obvious placeholder so none is left
+      // vehicle-less — a jobs run only reaches the customers who have jobs,
+      // which left 114 of ACEE's 446 with nothing to attach work to. The jobs
+      // run matches this one by name rather than creating a second.
+      HCP_PLACEHOLDER_VEHICLE]);
   }
   const rows=dedup(out);
   rows._hcpcust={dns,extraAddr,companies,fromDisplay,businesses,before:out.length};
@@ -4621,7 +4628,7 @@ async function importJobsRun(key){
       // Jobs require at least one item — create a placeholder vehicle once per customer
       const pk=ck+'|__placeholder__';
       if(!itemMap[pk]){
-        const r=await apiFetch('/v1/items',{method:'POST',body:JSON.stringify({customerId:custId,name:'ZZZ \u2014 PLACEHOLDER, replace with real vehicle',type:'automotive',industry:selectedIndustry()})},key);
+        const r=await apiFetch('/v1/items',{method:'POST',body:JSON.stringify({customerId:custId,name:HCP_PLACEHOLDER_VEHICLE,type:'automotive',industry:selectedIndustry()})},key);
         if(r.ok&&r.body&&r.body.success) itemMap[pk]=r.body.data.id;
       }
       if(itemMap[pk]) itemIds=[itemMap[pk]];
