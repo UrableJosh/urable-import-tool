@@ -2735,7 +2735,23 @@ function convertAgendaJobs(data){
     if(txt) stated[sid]=txt;
     const n=cl(r['Proxima_cita_PR']); if(n) nextAppt[sid]=n.slice(0,10);
   }
-  const jobs=[]; let noDate=0, noPrice=0, withVeh=0, tagged=0, stated_n=0;
+  // Two bookings for the same customer that run over each other are not
+  // duplicates — a customer with three recurring series and three vehicles has
+  // them land on the same morning. They need a human eye, not a silent merge,
+  // so flag both sides and leave them in.
+  const spans=[];
+  for(const r of data){
+    const st=parseJobDate(r['Inicio_PR']); if(!st) continue;
+    const en=parseJobDate(r['Fin_PR'])||st;
+    spans.push({who:agendaPhone(r['Telefono'])||cl(r['Cliente']).toLowerCase(),st,en,
+                id:cl(r['Reserva_Square'])+'|'+cl(r['Evento_Google'])});
+  }
+  const clash=new Set();
+  for(let i=0;i<spans.length;i++) for(let j=i+1;j<spans.length;j++){
+    if(spans[i].who!==spans[j].who) continue;
+    if(spans[i].st<spans[j].en&&spans[j].st<spans[i].en){ clash.add(spans[i].id); clash.add(spans[j].id); }
+  }
+  const jobs=[]; let noDate=0, noPrice=0, withVeh=0, tagged=0, stated_n=0, overlaps=0;
   let d30=0,d90=0,d365=0,beyond=0;
   const now=Date.now();
   for(const r of data){
@@ -2761,6 +2777,10 @@ function convertAgendaJobs(data){
     const np=[];
     if(p.note) np.push(p.note);
     if(cl(r['Reserva_Square'])) np.push('Square booking: '+cl(r['Reserva_Square']));
+    if(clash.has(cl(r['Reserva_Square'])+'|'+cl(r['Evento_Google']))){
+      np.push('OVERLAPS another appointment for this customer \u2014 both were kept, please review');
+      overlaps++;
+    }
     const sid=cl(r['Serie_Google']);
     if(sid){
       // "Repeats every 6 months (2 dates skipped)" from the series file, else
@@ -2798,7 +2818,7 @@ function convertAgendaJobs(data){
       taxed:false, notes:np.join(' | '), total:subtotal, paid:0
     });
   }
-  jobs._agenda={noDate,noPrice,withVeh,d30,d90,d365,beyond,tagged,stated:stated_n,
+  jobs._agenda={noDate,noPrice,withVeh,d30,d90,d365,beyond,tagged,overlaps,stated:stated_n,
     seriesFile:agendaSeriesName||''};
   return jobs;
 }
@@ -2892,6 +2912,7 @@ function processRaw(raw, filename){
       ? (jobsData.length.toLocaleString()+' scheduled jobs \u00b7 '+ag.d90.toLocaleString()+
          ' in the next 90 days \u00b7 '+ag.beyond.toLocaleString()+' more than a year out \u00b7 '+
          ag.tagged.toLocaleString()+' marked as the last of a repeating series'+
+         (ag.overlaps?(' \u00b7 '+ag.overlaps.toLocaleString()+' flagged as overlapping another appointment'):'')+
          (ag.seriesFile?(' \u00b7 repeat rules read from '+ag.seriesFile)
                        :' \u00b7 drop the series file alongside to use the shop\u2019s own repeat rules'))
       : (jobsData.length.toLocaleString()+' jobs \u00b7 $'+(paidCents/100).toLocaleString(undefined,{maximumFractionDigits:0})+' historical payments');
