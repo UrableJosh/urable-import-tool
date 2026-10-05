@@ -477,13 +477,18 @@ function dedup(rows){
     if(na&&!(rows[i][11]||'').includes(tagA)) rows[i][11]=[rows[i][11],tagA].filter(Boolean).join(' | ');
     if(nb&&!(rows[j][11]||'').includes(tagB)) rows[j][11]=[rows[j][11],tagB].filter(Boolean).join(' | ');
   }
+  // Compare against EVERY earlier holder of the identifier, not just the first.
+  // Housecall Pro had three records on one number — "Douglas Kirk" and two
+  // spellings of "Doug Kirk". Keeping one representative meant both Dougs were
+  // only ever measured against Douglas, clashed with him, and so never met each
+  // other: one man imported twice under the same name.
   const phoneMap={}, emailMap={};
   for(let i=0;i<n;i++){
     const r=rows[i];
     const ph=(r[9]||'').replace(/\D/g,'');
     const em=(r[10]||'').trim().toLowerCase();
-    if(ph){if(phoneMap[ph]!==undefined)guardedUnion(i,phoneMap[ph],'phone');else phoneMap[ph]=i;}
-    if(em){if(emailMap[em]!==undefined)guardedUnion(i,emailMap[em],'email');else emailMap[em]=i;}
+    if(ph){ (phoneMap[ph]=phoneMap[ph]||[]).forEach(k=>guardedUnion(i,k,'phone')); phoneMap[ph].push(i); }
+    if(em){ (emailMap[em]=emailMap[em]||[]).forEach(k=>guardedUnion(i,k,'email')); emailMap[em].push(i); }
   }
   function mergeSeg(a,b){
     const seen=new Set(),out=[];
@@ -4632,11 +4637,22 @@ async function importJobsRun(key){
     // job goes out with two items and one line.
     if(!itemIds.length) itemIds=[...new Set(j.vehicles.map(v=>itemMap[ck+'|'+normVeh(v)]||findVehicle(ck,v)).filter(Boolean))];
     if(!itemIds.length){
-      // Jobs require at least one item — create a placeholder vehicle once per customer
+      // Jobs require at least one item — a placeholder vehicle, once per customer.
       const pk=ck+'|__placeholder__';
+      // The customer import may already have put one there, and a customer who
+      // owns exactly one vehicle can only mean that vehicle. Look before
+      // creating, or every customer ends up with two: 336 of ACEE's 449 did.
+      if(!itemMap[pk]){
+        const already=findVehicle(ck,HCP_PLACEHOLDER_VEHICLE);
+        if(already) itemMap[pk]=already;
+        else {
+          const mine=ckItems[ck]||[];
+          if(mine.length===1) itemMap[pk]=mine[0].id;
+        }
+      }
       if(!itemMap[pk]){
         const r=await apiFetch('/v1/items',{method:'POST',body:JSON.stringify({customerId:custId,name:HCP_PLACEHOLDER_VEHICLE,type:'automotive',industry:selectedIndustry()})},key);
-        if(r.ok&&r.body&&r.body.success) itemMap[pk]=r.body.data.id;
+        if(r.ok&&r.body&&r.body.success){ itemMap[pk]=r.body.data.id; createdVeh++; }
       }
       if(itemMap[pk]) itemIds=[itemMap[pk]];
     }
