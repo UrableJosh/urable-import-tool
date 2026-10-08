@@ -261,6 +261,16 @@ tbody tr:last-child td{border-bottom:none}
         <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
         <div class="progress-text" id="progressText"></div>
       </div>
+<style>
+.svc-map{background:#fff;color:#111;border:1px solid #d0d7de;border-radius:8px;padding:14px;margin:12px 0;font-size:13px;line-height:1.45}
+.svc-map-head{margin-bottom:10px}
+.svc-map-tbl{width:100%;border-collapse:collapse}
+.svc-map-tbl th,.svc-map-tbl td{text-align:left;padding:6px 8px;border-bottom:1px solid #eaeef2;vertical-align:top}
+.svc-map-tbl th{font-weight:600;color:#57606a;font-size:12px}
+.svc-map-tbl select{max-width:380px;width:100%;padding:4px}
+.svc-map-foot{margin-top:12px;display:flex;gap:12px;align-items:center}
+.svc-map .btn-link{background:none;border:0;color:#0969da;cursor:pointer;text-decoration:underline;font-size:13px}
+</style>
       <div class="import-log" id="importLog"></div>
       <div class="summary-box" id="summaryBox"></div>
       <p class="api-note">Build <span id="buildStamp"></span> &mdash; hard-refresh (Ctrl/Cmd&#8209;Shift&#8209;R) after replacing this file, or the browser keeps serving the old one.<br>Your API key stays in this browser tab &mdash; it is only ever sent to <code>app.urable.com</code> and is never stored. Imports run at a safe pace well under Urable's rate limit.</p>
@@ -2053,6 +2063,52 @@ function svcCore(n){
   }
   return out;
 }
+// Tokens for scoring: like svcCore, but tier numbers are KEPT ("2 a\u00f1os",
+// "5 a\u00f1os" and "9 a\u00f1os" are three different coatings) and words are
+// stemmed so cer\u00e1mico / cer\u00e1micos / ceramic collapse to one token.
+function svcStem(w){
+  let x=w;
+  for(const suf of ['es','s']) if(x.length>4&&x.endsWith(suf)){ x=x.slice(0,-suf.length); break; }
+  for(const suf of ['os','as','o','a']) if(x.length>5&&x.endsWith(suf)){ x=x.slice(0,-suf.length); break; }
+  if(x.length>5&&x.endsWith('ion')) x=x.slice(0,-3);
+  return x;
+}
+function svcTokens(n){
+  let f=foldAccents(String(n)).toLowerCase().replace(/\([^)]*\)/g,' ');
+  for(const [re] of SVC_SIZES) f=f.replace(new RegExp(re.source,'g'),' ');
+  const out=new Set();
+  for(const w of f.split(/[^a-z0-9+]+/)){
+    if(!w) continue;
+    const num=w.replace(/\+$/,'');                 // "9+" is the same tier as "9"
+    if(/^\d+$/.test(num)){ out.add('#'+num); continue; }
+    if(SVC_STOP.has(w)||w.length<3) continue;
+    out.add(svcStem(w));
+  }
+  return out;
+}
+// "frontal"/"front" and "protecci\u00f3n"/"protection" read as the same word.
+function svcNear(t,B){
+  if(B.has(t)) return 1;
+  if(t.charAt(0)==='#'||t.length<5) return 0;
+  for(const u of B){
+    if(u.charAt(0)==='#'||u.length<5) continue;
+    const n=Math.min(t.length,u.length);
+    if(n>=5&&t.slice(0,n)===u.slice(0,n)) return 0.85;
+  }
+  return 0;
+}
+function svcNameScore(A,B,idf){
+  if(!A.size||!B.size) return 0;
+  let inter=0,tot=0;
+  for(const t of A){ const w=idf(t); tot+=w; inter+=w*svcNear(t,B); }
+  // The shop's name is usually the longer one ("Gtechniq Crystal Serum Light -
+  // 5 a\u00f1os" vs "Ceramic coating 5 a\u00f1os"). Charge little for its extra words,
+  // or a strong rare-word hit gets buried.
+  for(const t of B) if(!svcNear(t,A)) tot+=idf(t)*0.25;
+  return tot?inter/tot:0;
+}
+function svcPriceScore(a,b){ if(!a||!b) return 0; return Math.min(a,b)/Math.max(a,b); }
+
 function svcCoreEq(a,b){
   if(!a.size||!b.size) return false;
   if(a.size!==b.size) return false;
@@ -4122,6 +4178,81 @@ async function testConnection(){
   setTimeout(()=>{btn.textContent='Test connection';},4000);
 }
 
+// ─── Service mapping confirmation ───────────────────────────────────────────
+// Everything the matcher could not settle on its own stops here. A wrong bind
+// is a wrong price on a real customer's job, so the shop confirms it rather
+// than finding out afterwards. Choices are remembered per account, so a re-run
+// does not ask twice.
+function svcMapStoreKey(){
+  try{
+    const k=document.getElementById('apiKey');
+    const v=k?String(k.value||''):'';
+    return 'urableImportSvcMap:'+(v?v.slice(-8):'default');
+  }catch(_){ return 'urableImportSvcMap:default'; }
+}
+function svcMapLoad(){
+  try{ return JSON.parse(localStorage.getItem(svcMapStoreKey())||'{}')||{}; }catch(_){ return {}; }
+}
+function svcMapSave(m){ try{ localStorage.setItem(svcMapStoreKey(),JSON.stringify(m)); }catch(_){} }
+
+function confirmServiceMapping(rows, allCatalogNames){
+  const saved=svcMapLoad();
+  // Anything already answered for this account keeps its answer and is not asked again.
+  const ask=rows.filter(r=>!Object.prototype.hasOwnProperty.call(saved,r.name));
+  if(!ask.length) return Promise.resolve(saved);
+  const money=c=>'$'+(c/100).toFixed(2);
+  const log=document.getElementById('importLog');
+  log.style.display='block';
+  const box=document.createElement('div');
+  box.className='svc-map';
+  const sortedAll=allCatalogNames.slice().sort((a,b)=>a.localeCompare(b));
+  let html='<div class="svc-map-head"><strong>'+ask.length+' service'+(ask.length===1?'':'s')+
+    ' need a decision before the jobs are written.</strong><br>'+
+    'These came in under names your catalog does not use. Pick the service each one really is, '+
+    'or leave it as a new entry. Job prices are never changed by this \u2014 only which service the line points at.</div>';
+  html+='<table class="svc-map-tbl"><thead><tr><th>From the export</th><th>Used on</th><th>Amounts</th><th>Your service</th></tr></thead><tbody>';
+  ask.forEach((r,i)=>{
+    const amts=r.cents.slice(0,3).map(money).join(', ')+(r.cents.length>3?(' +'+(r.cents.length-3)):'');
+    let opts='<option value="">\u2014 Create as a new service \u2014</option>';
+    const top=r.ranked.slice(0,3).map(x=>x.name);
+    top.forEach(n=>{
+      const sc=r.ranked.find(x=>x.name===n);
+      opts+='<option value="'+escHtml(n)+'"'+(n===r.preselect?' selected':'')+'>'+
+            escHtml(n)+'  \u2014 '+Math.round((sc?sc.score:0)*100)+'% match</option>';
+    });
+    const rest=sortedAll.filter(n=>top.indexOf(n)<0);
+    if(rest.length){
+      opts+='<optgroup label="All other services">';
+      rest.forEach(n=>{opts+='<option value="'+escHtml(n)+'">'+escHtml(n)+'</option>';});
+      opts+='</optgroup>';
+    }
+    html+='<tr><td>'+escHtml(r.name)+'</td><td>'+(r.count||0)+' line'+(r.count===1?'':'s')+
+      '</td><td>'+escHtml(amts)+'</td><td><select data-svcmap="'+i+'">'+opts+'</select></td></tr>';
+  });
+  html+='</tbody></table><div class="svc-map-foot">'+
+    '<button type="button" id="svcMapGo" class="btn">Use these and continue</button> '+
+    '<button type="button" id="svcMapAllNew" class="btn-link">Create all as new instead</button></div>';
+  box.innerHTML=html;
+  log.appendChild(box);
+  box.scrollIntoView({behavior:'smooth',block:'center'});
+  return new Promise(resolve=>{
+    const finish=(useSelections)=>{
+      const out=Object.assign({},saved);
+      ask.forEach((r,i)=>{
+        const sel=box.querySelector('[data-svcmap="'+i+'"]');
+        out[r.name]=useSelections&&sel?String(sel.value||''):'';
+      });
+      svcMapSave(out);
+      const bound=Object.keys(out).filter(k=>out[k]).length;
+      box.innerHTML='<div class="svc-map-head"><strong>Service mapping confirmed.</strong> '+
+        bound+' bound to your catalog, '+(Object.keys(out).length-bound)+' created as new.</div>';
+      resolve(out);
+    };
+    box.querySelector('#svcMapGo').addEventListener('click',()=>finish(true));
+    box.querySelector('#svcMapAllNew').addEventListener('click',()=>finish(false));
+  });
+}
+
 function logLine(msg,isErr){
   const log=document.getElementById('importLog');
   log.style.display='block';
@@ -4177,6 +4308,7 @@ async function importJobsRun(key){
   const prodCategory={};  // product name -> source category
   const skuFor={};        // product name -> Map(cents -> priceSku actually in use)
   const prodPriceSizes={}; // product name -> Map(cents -> Map(size -> count))
+  const prodUseCount={};   // product name -> how many job lines use it
   const bindable=new Set(); // "name|cents" pairs the account can actually price
   const routeTo=new Map(); // "name|cents" -> the product that carries that amount
 
@@ -4218,6 +4350,7 @@ async function importJobsRun(key){
       // split only for sources that carry no per-line amounts.
       const cents=j.lineCents?j.lineCents[idx]:(idx===0?(j.firstLineCents??j.perLineCents):j.perLineCents);
       (prodVariants[pname]=prodVariants[pname]||new Set()).add(cents);
+      prodUseCount[pname]=(prodUseCount[pname]||0)+1;
       if(useCatalog&&j.lineCats&&j.lineCats[idx]&&!prodCategory[pname]) prodCategory[pname]=j.lineCats[idx];
       // remember which vehicle sizes were charged this amount, so the price
       // variant can be labelled "Full Size Truck" instead of "Imported $495.00"
@@ -4437,35 +4570,62 @@ async function importJobsRun(key){
       const nm=String(p.name||''); if(!nm) continue;
       const vals=new Set();
       for(const pr of (p.prices||[])){ const v=priceCents(pr.value); if(v!=null) vals.add(v); }
-      exStruct.push({name:nm,core:svcCore(nm),size:svcSize(nm),vals:vals});
+      const vl=[...vals].sort((a,b)=>a-b);
+      exStruct.push({name:nm,core:svcCore(nm),toks:svcTokens(nm),size:svcSize(nm),
+                     vals:vals,best:vl.length?vl[Math.floor(vl.length/2)]:0});
     }
     // Bind only when the work agrees, the vehicle class agrees, AND one of the
     // historical amounts is a price the shop still carries. Name-and-size alone
     // is not enough: "Lavado, descontaminacion y sellado" and "Lavado, pulido y
     // sellado" are different services at different prices, and a confident wrong
     // bind is worse than an entry in Imported, because nobody reviews it.
-    const structHits={}, structMisses={};
-    function structMatch(pname,centsSet){
-      const core=svcCore(pname), size=svcSize(pname);
-      if(!core.size) return null;
+    const structHits={};
+    // Rare words should outweigh common ones: "aros" identifies a service,
+    // "lavado" appears on half the catalog.
+    const exTokSets=exStruct.map(e=>e.toks);
+    const dfMap={};
+    exTokSets.forEach(t=>t.forEach(w=>{dfMap[w]=(dfMap[w]||0)+1;}));
+    const idf=w=>Math.log(1+exTokSets.length/(1+(dfMap[w]||0)));
+    // Rank the shop's catalog against one source service. Vehicle class is a
+    // hard gate - binding a Mid-size job to a Pickup price is a wrong charge,
+    // not a near miss.
+    function rankFor(pname,centsSet){
+      const A=svcTokens(pname), size=svcSize(pname);
+      const mid=[...centsSet].sort((a,b)=>a-b)[Math.floor(centsSet.size/2)]||0;
+      const out=[];
       for(const e of exStruct){
-        if(!svcCoreEq(core,e.core)) continue;
         if(size&&e.size&&size!==e.size) continue;
-        if(!size!==!e.size) continue;
-        let priced=false;
-        for(const c of centsSet) if(e.vals.has(c)){ priced=true; break; }
-        if(priced) return e.name;
+        if(size&&!e.size) continue;
+        const n=svcNameScore(A,e.toks,idf);
+        let p=0; for(const c of centsSet) p=Math.max(p,svcPriceScore(c,e.best));
+        if(!p) p=svcPriceScore(mid,e.best);
+        out.push({name:e.name,n:n,p:p,score:0.7*n+0.3*p});
       }
-      return null;
+      out.sort((a,b)=>b.score-a.score);
+      return out;
+    }
+    // Decide once for every source service, then ask about whatever is left.
+    const needAsk=[], autoBind={};
+    for(const pname of Object.keys(prodVariants)){
+      if(prodMap[pname]||prodAlias[matchKey(pname)]) continue;
+      const set=prodVariants[pname];
+      const ranked=rankFor(pname,set).slice(0,6);
+      const b=ranked[0];
+      // The export names no vehicle class but the shop prices by class, so
+      // several entries tie. Picking one is a coin flip on the customer's price.
+      const tie = b && !svcSize(pname) && ranked[1] && Math.abs(ranked[1].score-b.score)<0.08;
+      if(b && !tie && b.n>=0.5 && b.p>=0.80){ autoBind[pname]=b.name; structHits[pname]=b.name; continue; }
+      needAsk.push({name:pname, count:prodUseCount[pname]||0,
+                    cents:[...set].sort((a,b2)=>a-b2), ranked:ranked,
+                    preselect:(b&&!tie&&b.score>=0.40)?b.name:''});
+    }
+    if(needAsk.length){
+      const picked=await confirmServiceMapping(needAsk,exStruct.map(e=>e.name));
+      for(const k of Object.keys(picked)) if(picked[k]) autoBind[k]=picked[k];
     }
     for(const pname of Object.keys(prodVariants)){
       const set=prodVariants[pname];
-      let alias=prodAlias[matchKey(pname)];
-      if(!alias&&!prodMap[pname]){
-        const hit=structMatch(pname,set);
-        if(hit){ alias=hit; structHits[pname]=hit; }
-        else structMisses[pname]=[...set].sort((a,b)=>a-b);
-      }
+      let alias=prodAlias[matchKey(pname)]||autoBind[pname];
       const resolved=prodMap[pname]?pname:(alias||pname);
       const existing=prodMap[resolved];
       if(existing&&resolved!==pname){ prodMap[pname]=existing; exProdPrices[pname]=exProdPrices[resolved]; }
@@ -4539,12 +4699,12 @@ async function importJobsRun(key){
       }
       // And what did not match, with the amounts, so the shop can map or create
       // them deliberately instead of discovering them afterwards.
-      const missNames=Object.keys(structMisses);
+      const missNames=Object.keys(prodVariants).filter(n=>!prodMap[n]&&!prodAlias[matchKey(n)]&&!autoBind[n]);
       if(missNames.length){
-        logLine(missNames.length.toLocaleString()+' service(s) did not match anything in your catalog and will be created under Imported \u2014 review these:',true);
+        logLine(missNames.length.toLocaleString()+' service(s) are not in your catalog and were created under Imported:',true);
         const fmt=c=>'$'+(c/100).toFixed(2);
         for(const n of missNames.slice(0,40)){
-          const v=structMisses[n]||[];
+          const v=[...(prodVariants[n]||[])].sort((a,b)=>a-b);
           logLine('    \u2022 "'+n+'"  ('+v.slice(0,4).map(fmt).join(', ')+(v.length>4?(' +'+(v.length-4)+' more'):'')+')');
         }
         if(missNames.length>40) logLine('    \u2026 and '+(missNames.length-40).toLocaleString()+' more.');
