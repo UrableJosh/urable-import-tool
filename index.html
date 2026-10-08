@@ -2906,7 +2906,7 @@ function convertAgendaJobs(data){
       }
     }
     jobs.push({
-      num:'', status:'scheduled', type:'shop', title:'',
+      num:'', srcRef:cl(r['Reserva_Square'])||cl(r['Evento_Google'])||'', status:'scheduled', type:'shop', title:'',
       customer:{ name:name, email:cleanEmail(r['Email']), phone:agendaPhone(r['Telefono']),
         a1:'',a2:'',city:'',state:'',zip:'',country:'',
         // so a jobs-only drop still leaves the customer described, not bare
@@ -4091,6 +4091,21 @@ async function importJobsRun(key){
   document.getElementById('summaryBox').style.display='none';
   const errors=[];
   function err(label,msg){ errors.push(label+': '+msg); if(errors.length<=40) logLine(label+': '+msg,true); }
+  // A failed record has to be findable in the source file. Jobs exports carry
+  // their own number; a calendar or booking export has none, so the label fell
+  // through to a bare "job #:" and the record could not be identified for a
+  // retry. Name whatever the source does give us instead.
+  function jobLabel(j){
+    if(j&&j.num) return 'job #'+j.num;
+    const who=(j&&j.customer&&j.customer.name)||'unknown customer';
+    let when='';
+    // local calendar date, not UTC — an evening appointment must not be
+    // reported under the following day.
+    if(j&&j.start){ const d=new Date(j.start);
+      if(!isNaN(d)) when=' on '+d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+    const ref=(j&&j.srcRef)?' ['+j.srcRef+']':'';
+    return 'job for '+who+when+ref;
+  }
   const fill=document.getElementById('progressFill'), ptext=document.getElementById('progressText');
 
   // Phase plan — identifier + name so shared household phones don't merge people
@@ -4617,7 +4632,7 @@ async function importJobsRun(key){
   await pool(jobsData, 4, async (j)=>{
     const ck=custKey(j.customer);
     const custId=custMap[ck];
-    if(!custId){ failedJobs++; err('job #'+j.num,'customer was not created'); tick('Creating jobs'); return; }
+    if(!custId){ failedJobs++; err(jobLabel(j),'customer was not created'); tick('Creating jobs'); return; }
     // Already imported? Skip — this makes re-running a file safe, so a partial
     // or failed run can be finished by simply importing the same file again.
     // signature subtotal must be pre-adjustment to match Urable's invoice.subtotal
@@ -4664,13 +4679,13 @@ async function importJobsRun(key){
       }
       if(itemMap[pk]) itemIds=[itemMap[pk]];
     }
-    if(!itemIds.length){ failedJobs++; err('job #'+j.num,'no vehicle/item available'); tick('Creating jobs'); return; }
+    if(!itemIds.length){ failedJobs++; err(jobLabel(j),'no vehicle/item available'); tick('Creating jobs'); return; }
     // Urable rejects a job carrying an item with no line item. Rather than lose
     // the whole job, drop the unreferenced vehicles and say which ones.
     if(itemIds.length>j.lineItems.length&&j.lineItems.length>0){
       const dropped=itemIds.length-j.lineItems.length;
       itemIds=itemIds.slice(0,j.lineItems.length);
-      logLine('job #'+j.num+': '+dropped+' vehicle(s) had no line item and were left off the job. Source Items cell: '+(j.vehiclesRaw||j.vehicles.join(', ')),true);
+      logLine(jobLabel(j)+': '+dropped+' vehicle(s) had no line item and were left off the job. Source Items cell: '+(j.vehiclesRaw||j.vehicles.join(', ')),true);
     }
     const lineItems=j.lineItems.map((li,i)=>{
       const cents=j.lineCents?j.lineCents[i]:(i===0?(j.firstLineCents??j.perLineCents):j.perLineCents);
@@ -4689,7 +4704,7 @@ async function importJobsRun(key){
       e.priceSku=(skuFor[pname]&&skuFor[pname].get(cents))||('imp'+cents);
       return e;
     }).filter(e=>e.productServiceId||e.name);
-    if(!lineItems.length){ failedJobs++; err('job #'+j.num,'no line items/services available'); tick('Creating jobs'); return; }
+    if(!lineItems.length){ failedJobs++; err(jobLabel(j),'no line items/services available'); tick('Creating jobs'); return; }
     // Generic mode: keep the real service names on the job record
     let jobNotes=j.notes;
     if(!useCatalog&&j.lineItems.length){
@@ -4736,7 +4751,7 @@ async function importJobsRun(key){
         const got=gotRaw==null?null:Number(gotRaw);
         if(want&&got!=null&&isFinite(got)&&Math.abs(got-want)>1){
           priceDrift++;
-          if(priceDrift<=25) err('job #'+j.num,'line total came back $'+(got/100).toFixed(2)+' but the source says $'+(want/100).toFixed(2));
+          if(priceDrift<=25) err(jobLabel(j),'line total came back $'+(got/100).toFixed(2)+' but the source says $'+(want/100).toFixed(2));
         }
       }catch(_){}
       const rec={id:r.body.data.id,paid:0}; // guard against in-file repeats
@@ -4746,7 +4761,7 @@ async function importJobsRun(key){
       if(j.num) exJobByNum[j.num]=rec; else exJobByKey[sig]=rec;
       if(j.paid>0) madeJobs.push({jid:r.body.data.id,custId:custId,j:j});
     }
-    else { failedJobs++; err('job #'+j.num,(r.body&&r.body.error)||('HTTP '+r.status)); }
+    else { failedJobs++; err(jobLabel(j),(r.body&&r.body.error)||('HTTP '+r.status)); }
     tick('Creating jobs');
   });
 
@@ -4773,7 +4788,7 @@ async function importJobsRun(key){
       if(r.status===403&&/scope/i.test(msg)){
         paymentsBlocked=true;
         err('payments','API key is missing the payments:write scope — create a new key including it, then re-run the jobs import (existing records will be matched, only payments will be added)');
-      } else err('payment for job #'+j.num,msg);
+      } else err('payment for '+jobLabel(j),msg);
     }
     tick('Recording payments');
   });
