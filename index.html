@@ -2004,13 +2004,60 @@ function convertGenericProductsSheet(data, cols){
 // catalog says "NHOU Salt Brine Eliminator Underbody Wash/Flush". Stripping
 // those suffixes for MATCHING purposes recovers 711 line items on Rite-Way
 // without touching the names we create or display.
+// Diacritics were being deleted by the [^a-z0-9] sweep, which SPLITS the word:
+// "Sed\u00e1n" became "sed n" and "Cer\u00e1micos" became "cer micos". Any Spanish,
+// French or Portuguese catalog failed to match its own names. Fold to the base
+// letter first.
+function foldAccents(s){
+  try{ return String(s).normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
+  catch(_){ return String(s); }
+}
 function matchKey(s){
-  return cl(s).toLowerCase()
+  return foldAccents(cl(s)).toLowerCase()
     // earlier builds suffixed companion entries with "(imported)". Ignore it so
     // a re-run against an account they touched reuses those entries.
     .replace(/\s*\(\s*imported\s*\)\s*$/,'')
     .replace(/\s*\b(ad\s*on|add[\s-]*on|copy)\b\s*$/,'')
     .replace(/[^a-z0-9]+/g,' ').trim();
+}
+
+// --- structured service identity -------------------------------------------
+// A shop writes "Car Wash - Pickup (tarifa regular)"; the export it is migrating
+// from writes "Car Wash Pick Up". Exact-name matching binds neither to the other,
+// so every line lands in Imported even when the shop already carries the service.
+// Split a name into the vehicle class it names and the words that identify the
+// work, and compare those instead.
+const SVC_SIZES=[[/\bpick\s*-?\s*ups?\b/,'pickup'],[/\btrucks?\b/,'pickup'],
+  [/\bxl\b/,'xl'],[/\bmid\s*-?\s*size\b/,'midsize'],[/\bmidsize\b/,'midsize'],
+  [/\bsedan\b/,'sedan'],[/\bmotorcycles?\b/,'moto'],[/\bvans?\b/,'van']];
+function svcSize(n){ const f=foldAccents(String(n)).toLowerCase();
+  for(const [re,t] of SVC_SIZES) if(re.test(f)) return t; return ''; }
+// Words that describe packaging or pricing rather than the work itself. Dropping
+// them lets "Car Wash - Sedan (tarifa regular)" and "Car Wash Sedan" agree.
+const SVC_STOP=new Set(('de del la el los las un una y o con para por en a al'
+ +' the and of for with to regular tarifa desde from starting precio price'
+ +' service services servicio servicios vehiculo vehicle completo complete full'
+ +' suv car auto meses mes month months ano anos year years imported').split(' '));
+function svcCore(n){
+  let f=foldAccents(String(n)).toLowerCase().replace(/\([^)]*\)/g,' ');
+  // Strip the vehicle class from the WHOLE string before tokenising. Splitting
+  // first turns "Mid-size" into "mid"+"size" and "Pick Up" into "pick"+"up",
+  // which no single-word test recognises - so the shop's "Car Wash - Mid-size"
+  // and the export's "Car Wash Midsize" ended up with different token sets.
+  for(const [re] of SVC_SIZES) f=f.replace(new RegExp(re.source,'g'),' ');
+  const out=new Set();
+  for(const w of f.split(/[^a-z0-9+]+/)){
+    if(!w||SVC_STOP.has(w)) continue;
+    if(/^\d+$/.test(w)) continue;          // "3 meses", "2 anos" - a tier, not the work
+    out.add(w);
+  }
+  return out;
+}
+function svcCoreEq(a,b){
+  if(!a.size||!b.size) return false;
+  if(a.size!==b.size) return false;
+  for(const w of a) if(!b.has(w)) return false;
+  return true;
 }
 
 function sizeLabel(v){ return cl(v); }
@@ -2692,6 +2739,7 @@ function convertHCPJobs(data){
 // Two files arrive: the expanded appointments, and the recurring series behind
 // them.
 const AGENDA_DUR=/\s*-\s*((?:\d+\s*(?:days?|hours?|minutes?))(?:\s+\d+\s*minutes?)?)\s*(?:-\s*\$\s?([\d,]+(?:\.\d{1,2})?))?/gi;
+const AGENDA_SIZE_LABEL={pickup:'Pick-up',xl:'XL SUV',midsize:'Mid-size',sedan:'Sed\u00e1n',moto:'Motorcycle',van:'Van'};
 const AGENDA_MAKES=/\b(acura|audi|bmw|buick|cadillac|chevy|chevrolet|chrysler|dodge|ram|ford|gmc|honda|hyundai|infinit[iy]|jeep|kia|lexus|lincoln|mazda|mercedes|benz|mini|mitsubishi|nissan|porsche|subaru|tesla|toyota|volkswagen|vw|volvo|rivian|jaguar|land ?rover|range ?rover|genesis|smart|suzuki|elantra|seltos|4runner|jetta|corolla|rav4|highlander|tacoma|tundra|telluride|murano|outlander|sportage|compass|cherokee|gladiator|defender|accent|sorento|cr-?v|x[1-7]|m[34]|q[3-8]|xc\d\d|ex30|glc|k4|ls500|f-?150|raptor|rebel|ridg[el]ine|king ranch|challenger|gti|model [3ysx]|juniper|land cruiser|sierra|silverado|camry|civic|accord)\b/i;
 
 // The same service is typed a dozen ways — "Lavado-descontaminacion- Sellado 3
@@ -2916,7 +2964,10 @@ function convertAgendaJobs(data){
       itemType:'automotive',
       completedAt:null, updatedAt:null,
       lineItems:names, lineCents:cents, lineCats:names.map(()=>'Imported'),
-      lineSizes:names.map(()=>''),
+      // The vehicle class is in the service name ("Car Wash Midsize"). Feeding it
+      // through as the line's size lets the price point be labelled "Mid-size"
+      // rather than by its amount.
+      lineSizes:names.map(n=>AGENDA_SIZE_LABEL[svcSize(n)]||''),
       subtotal:subtotal,
       perLineCents:names.length?Math.floor(subtotal/names.length):subtotal,
       firstLineCents:names.length?subtotal-Math.floor(subtotal/names.length)*(names.length-1):subtotal,
@@ -4378,9 +4429,43 @@ async function importJobsRun(key){
   // reconcile) and preserves the real names in each job's notes.
   if(matchOnly){
     let moved=0, movedPrices=0;
+    // Index the account's own catalog by (what the work is, which vehicle class),
+    // with the prices it actually carries. An exact-name hit is still preferred;
+    // this is the fallback that catches the shop's own spelling of the same thing.
+    const exStruct=[];
+    for(const p of exProds){
+      const nm=String(p.name||''); if(!nm) continue;
+      const vals=new Set();
+      for(const pr of (p.prices||[])){ const v=priceCents(pr.value); if(v!=null) vals.add(v); }
+      exStruct.push({name:nm,core:svcCore(nm),size:svcSize(nm),vals:vals});
+    }
+    // Bind only when the work agrees, the vehicle class agrees, AND one of the
+    // historical amounts is a price the shop still carries. Name-and-size alone
+    // is not enough: "Lavado, descontaminacion y sellado" and "Lavado, pulido y
+    // sellado" are different services at different prices, and a confident wrong
+    // bind is worse than an entry in Imported, because nobody reviews it.
+    const structHits={}, structMisses={};
+    function structMatch(pname,centsSet){
+      const core=svcCore(pname), size=svcSize(pname);
+      if(!core.size) return null;
+      for(const e of exStruct){
+        if(!svcCoreEq(core,e.core)) continue;
+        if(size&&e.size&&size!==e.size) continue;
+        if(!size!==!e.size) continue;
+        let priced=false;
+        for(const c of centsSet) if(e.vals.has(c)){ priced=true; break; }
+        if(priced) return e.name;
+      }
+      return null;
+    }
     for(const pname of Object.keys(prodVariants)){
       const set=prodVariants[pname];
-      const alias=prodAlias[matchKey(pname)];
+      let alias=prodAlias[matchKey(pname)];
+      if(!alias&&!prodMap[pname]){
+        const hit=structMatch(pname,set);
+        if(hit){ alias=hit; structHits[pname]=hit; }
+        else structMisses[pname]=[...set].sort((a,b)=>a-b);
+      }
       const resolved=prodMap[pname]?pname:(alias||pname);
       const existing=prodMap[resolved];
       if(existing&&resolved!==pname){ prodMap[pname]=existing; exProdPrices[pname]=exProdPrices[resolved]; }
@@ -4444,6 +4529,26 @@ async function importJobsRun(key){
       prodList=Object.entries(prodVariants);
       totalOps=custList.length+prodList.length+vehList.length+jobsData.length+payPlanned;
       logLine('Match-only: '+moved.toLocaleString()+' service(s) the account does not carry will be created under their real names in the Imported category. '+movedPrices.toLocaleString()+' historical amount(s) are no longer in the catalog and will be carried on a companion entry in the Imported category so the job totals stay exact. No changes to existing services.');
+      // Say out loud what was bound by spelling rather than by an exact name, so
+      // a wrong guess is visible before anyone reads the jobs.
+      const hitNames=Object.keys(structHits);
+      if(hitNames.length){
+        logLine(hitNames.length.toLocaleString()+' service(s) matched your catalog under a different spelling and were bound to your own entry:');
+        for(const n of hitNames.slice(0,40)) logLine('    \u2022 "'+n+'"  \u2192  "'+structHits[n]+'"');
+        if(hitNames.length>40) logLine('    \u2026 and '+(hitNames.length-40).toLocaleString()+' more.');
+      }
+      // And what did not match, with the amounts, so the shop can map or create
+      // them deliberately instead of discovering them afterwards.
+      const missNames=Object.keys(structMisses);
+      if(missNames.length){
+        logLine(missNames.length.toLocaleString()+' service(s) did not match anything in your catalog and will be created under Imported \u2014 review these:',true);
+        const fmt=c=>'$'+(c/100).toFixed(2);
+        for(const n of missNames.slice(0,40)){
+          const v=structMisses[n]||[];
+          logLine('    \u2022 "'+n+'"  ('+v.slice(0,4).map(fmt).join(', ')+(v.length>4?(' +'+(v.length-4)+' more'):'')+')');
+        }
+        if(missNames.length>40) logLine('    \u2026 and '+(missNames.length-40).toLocaleString()+' more.');
+      }
     }
   }
 
@@ -4579,7 +4684,11 @@ async function importJobsRun(key){
     const centsList=[...centsSet].sort((a,b)=>a-b);
     const postName=nameOf(name);
     const labels=priceLabelsFor(postName,centsList);
-    const wanted=centsList.map(c=>({sku:'imp'+c,label:(labels&&labels.get(c))||('Imported $'+(c/100).toFixed(2)),value:c}));
+    // The label is what the shop reads on the job line. "Imported $66.90" tells
+    // them the record came from a migration, which is noise on a job they are
+    // about to run. Name the vehicle class when we know it, the amount when we
+    // do not - never the word Imported.
+    const wanted=centsList.map(c=>({sku:'imp'+c,label:(labels&&labels.get(c))||('$'+(c/100).toFixed(2)),value:c}));
     // The source system's category names ("Exterior Service Add-On", "Full
     // Package") are not this shop's vocabulary, and minting them scatters
     // imported history across categories nobody created. Use the source
