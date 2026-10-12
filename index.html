@@ -259,7 +259,7 @@ tbody tr:last-child td{border-bottom:none}
           <strong>This shop charges a tax or fee on every job</strong></label>
         <div class="tax-body" id="taxBody">
           <div class="tax-row">
-            <label>Called<input type="text" id="taxName" oninput="taxPreview()" value="Sales tax" size="14"></label>
+            <label>Called<input type="text" id="taxName" oninput="taxPreview()" value="" size="16" placeholder="IVU / Sales tax / GST"></label>
             <label>Rate<input type="text" id="taxRate" oninput="taxPreview()" value="" size="5" placeholder="11.5">%</label>
           </div>
           <label class="tax-inc">The amounts in this file&nbsp;
@@ -4317,8 +4317,12 @@ function taxConfig(){
   const on=document.getElementById('taxOn');
   if(!on||!on.checked) return null;
   const pct=parseFloat(String((document.getElementById('taxRate')||{}).value||'').replace(/[^\d.]/g,''));
-  if(!isFinite(pct)||pct<=0||pct>=100) return null;
-  const name=cl((document.getElementById('taxName')||{}).value)||'Tax';
+  if(!isFinite(pct)||pct<=0||pct>=100) return {incomplete:'rate'};
+  // No fallback name. This string lands on every job and every invoice the
+  // shop sends; a US default quietly riding onto a Puerto Rico account is
+  // exactly the kind of mistake nobody notices until a customer sees it.
+  const name=cl((document.getElementById('taxName')||{}).value);
+  if(!name) return {incomplete:'name'};
   const mode=((document.getElementById('taxMode')||{}).value)||'mixed';
   return {name:name, rate:pct/100, pct:pct, mode:mode};
 }
@@ -4331,6 +4335,9 @@ function taxPreview(){
   const el=document.getElementById('taxNote'); if(!el) return;
   const c=taxConfig();
   if(!c){ el.textContent=''; return; }
+  if(c.incomplete){ el.textContent = c.incomplete==='name'
+    ? 'Give it the name the shop uses \u2014 it appears on every job and invoice.'
+    : 'Enter the rate, for example 11.5.'; return; }
   const n=escHtml(c.name);
   if(c.mode==='all') el.innerHTML='Every amount is treated as tax-inclusive and divided back out. Customer totals do not change.';
   else if(c.mode==='none') el.innerHTML='Every amount is treated as pre-tax and '+n+' is added on top. Customer totals go up by '+c.pct+'%.';
@@ -4343,7 +4350,7 @@ function taxPreview(){
 // never base × rate — that way the customer total matches to the cent, including
 // the source system's own rounding wobble ($139.37 and $139.38 both round-trip).
 function applyTaxSplit(jobs,cfg){
-  if(!cfg) return null;
+  if(!cfg||cfg.incomplete) return null;
   let touched=0, feeTotal=0, baseTotal=0, incCount=0, preCount=0, skipped=0;
   for(const j of jobs){
     const n=(j.lineItems||[]).length; if(!n) continue;
@@ -4557,6 +4564,13 @@ async function importJobsRun(key){
   // points we match against the shop's catalog are the shop's own prices.
   {
     const tcfg=taxConfig();
+    if(tcfg&&tcfg.incomplete){
+      showError(tcfg.incomplete==='name'
+        ? 'Name the tax or fee before importing \u2014 it is written onto every job. For a Puerto Rico shop that is IVU.'
+        : 'Enter the tax or fee rate before importing, for example 11.5.');
+      btn.disabled=false; btn.textContent='Start import';
+      return;
+    }
     const tres=applyTaxSplit(jobsData,tcfg);
     if(tres&&tres.touched){
       logLine(tcfg.name+' '+tcfg.pct+'%: '+tres.touched.toLocaleString()+' job(s) processed. '+
