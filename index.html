@@ -4517,6 +4517,8 @@ async function importJobsRun(key){
   const centsProdName={}; // cents -> generic product name (chunked)
   const prodCategory={};  // product name -> source category
   const skuFor={};        // product name -> Map(cents -> priceSku actually in use)
+  // marker for "this price has no sku; omit the field and take the default"
+  const DEFAULT_SKU='\u0000default';
   const prodPriceSizes={}; // product name -> Map(cents -> Map(size -> count))
   const prodUseCount={};   // product name -> how many job lines use it
   const bindable=new Set(); // "name|cents" pairs the account can actually price
@@ -4924,13 +4926,18 @@ async function importJobsRun(key){
       }
       // And what did not match, with the amounts, so the shop can map or create
       // them deliberately instead of discovering them afterwards.
-      const missNames=Object.keys(prodVariants).filter(n=>!prodMap[n]&&!prodAlias[matchKey(n)]&&!autoBind[n]);
+      // A companion entry is keyed name + NUL + category, which prints as
+      // "Car Wash Sedanimported" and reads like a service nobody recognises.
+      // It also is not a miss: its service DID bind, it is only the old price
+      // that the shop no longer carries. Keep those out of this list entirely.
+      const missNames=Object.keys(prodVariants).filter(n=>
+        !realName[n] && n.indexOf('\u0000')<0 && !prodMap[n] && !prodAlias[matchKey(n)] && !autoBind[n]);
       if(missNames.length){
         logLine(missNames.length.toLocaleString()+' service(s) are not in your catalog and were created under Imported:',true);
         const fmt=c=>'$'+(c/100).toFixed(2);
         for(const n of missNames.slice(0,40)){
           const v=[...(prodVariants[n]||[])].sort((a,b)=>a-b);
-          logLine('    \u2022 "'+n+'"  ('+v.slice(0,4).map(fmt).join(', ')+(v.length>4?(' +'+(v.length-4)+' more'):'')+')');
+          logLine('    \u2022 "'+nameOf(n)+'"  ('+v.slice(0,4).map(fmt).join(', ')+(v.length>4?(' +'+(v.length-4)+' more'):'')+')');
         }
         if(missNames.length>40) logLine('    \u2026 and '+(missNames.length-40).toLocaleString()+' more.');
       }
@@ -5047,8 +5054,21 @@ async function importJobsRun(key){
       // failure we kept seeing: "priceSku 'imp24900' not found". No sku means
       // this amount can't be referenced — leave it out so the caller prices
       // the line directly instead.
-      const sku=(p.sku!=null&&p.sku!=='')?p.sku:null;
-      if(sku==null) continue;
+      let sku=(p.sku!=null&&p.sku!=='')?p.sku:null;
+      // A service the shop built in the app often has ONE price point and no
+      // sku at all - every one of Perfect Auto's 63 services looks like
+      // {value:6000} and nothing else. Skipping those made every historical
+      // amount look missing, so a service that had just matched the shop's
+      // catalog got a companion entry in Imported anyway and the job line
+      // pointed at the companion. The bind happened and was then undone.
+      //
+      // With exactly one price point there is nothing to disambiguate: sending
+      // no priceSku uses the product's default, which IS that price. Record it
+      // as DEFAULT_SKU and let the line omit the field.
+      if(sku==null){
+        if((exProdPrices[nm]||[]).length!==1) continue;
+        sku=DEFAULT_SKU;
+      }
       const a=priceCents(p.value);            // as given
       const b=Math.round(Number(p.value)*100); // as dollars
       if(a!=null&&!m.has(a)) m.set(a,sku);
@@ -5195,7 +5215,10 @@ async function importJobsRun(key){
       // override in the API today: value/price/amount/unitPrice are ignored
       // and the product's default price point is used instead, which is wrong
       // money reported as success. A missing sku here fails loudly instead.
-      e.priceSku=(skuFor[pname]&&skuFor[pname].get(cents))||('imp'+cents);
+      const sku=(skuFor[pname]&&skuFor[pname].get(cents))||('imp'+cents);
+      // DEFAULT_SKU means the shop's service carries a single, unnamed price
+      // that already equals this amount. Omitting priceSku takes it.
+      if(sku!==DEFAULT_SKU) e.priceSku=sku;
       return e;
     }).filter(e=>e.productServiceId||e.name);
     if(!lineItems.length){ failedJobs++; err(jobLabel(j),'no line items/services available'); tick('Creating jobs'); return; }
