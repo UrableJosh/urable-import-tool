@@ -464,7 +464,49 @@ function isoCountry(c){
   return map[c.toLowerCase()]||'';
 }
 
+// Urable sorts customers by the raw string, so a last name typed in lower case
+// ("random", "annme") sinks below every capitalised name and the shop cannot
+// find it. Repair the case — but only where there is nothing to lose.
+//
+// A name that is ALL lower or ALL upper was never deliberately styled, so we
+// restyle it. A name that already mixes cases was typed that way on purpose:
+// "Je'Veon", "TiJuan", "McCauley", "KoJo", "DeShawn" are all left exactly as
+// the shop entered them. Guessing at those does more harm than the sort problem.
+const NAME_PARTICLES=new Set(['de','del','della','di','da','dos','du','la','las','le','los',
+  'van','von','der','den','ter','bin','ibn','al','st','af','av']);
+const NAME_SUFFIXES={jr:'Jr',sr:'Sr',ii:'II',iii:'III',iv:'IV',v:'V'};
+function capWord(w){
+  if(!w) return w;
+  // hyphens and apostrophes each start a new word: clayton-gallagher, o'brien
+  return w.replace(/[^\s]+/g, part =>
+    part.split('-').map(seg =>
+      seg.split("'").map((bit,i) =>
+        bit ? (i>0&&bit.length<2 ? bit : bit.charAt(0).toUpperCase()+bit.slice(1)) : bit
+      ).join("'")
+    ).join('-'));
+}
+function fixNameCase(v){
+  const s=cl(v);
+  if(!s) return s;
+  if(!/[a-z]/i.test(s)) return s;                 // nothing alphabetic to fix
+  const lower=s.toLowerCase(), upper=s.toUpperCase();
+  if(s!==lower && s!==upper) return s;            // deliberately mixed — leave it
+  const words=lower.split(/\s+/);
+  return words.map((w,i)=>{
+    const bare=w.replace(/[^a-z0-9]/g,'');
+    if(NAME_SUFFIXES[bare]&&i>0) return NAME_SUFFIXES[bare];
+    // "de la Cruz", "van der Berg" — but never as the first word, because a
+    // lower-case first letter is the very thing we are fixing.
+    if(i>0&&NAME_PARTICLES.has(bare)) return w;
+    return capWord(w);
+  }).join(' ');
+}
+
 function dedup(rows){
+  // Every converter funnels through here, so one pass fixes the case for all of
+  // them. City gets the same treatment ("louisville"); street lines are left
+  // alone because abbreviations and unit numbers do not survive title-casing.
+  for(const r of rows){ r[0]=fixNameCase(r[0]); r[1]=fixNameCase(r[1]); r[5]=fixNameCase(r[5]); }
   const n=rows.length;
   const parent=Array.from({length:n},(_,i)=>i);
   function find(x){while(parent[x]!==x){parent[x]=parent[parent[x]];x=parent[x];}return x;}
@@ -2388,6 +2430,10 @@ function detectPlatform(filename, headers, rawRows){
   if(fn.includes('mobiletechrx')||fn.includes('mtrx')||
      (h.includes('add_date')&&h.includes('category')&&h.includes('street')&&h.includes('name'))) return 'mtrx';
   if(h.includes('instant profile')) return 'squarealt';
+  // Tekmetric customer export
+  if(h.includes('customerid')&&h.includes('tax exempt')&&
+     (h.includes('contact first name')||h.includes('primary phone'))) return 'tekmetric';
+  if(fn.includes('tekmetric')) return 'tekmetric';
   // Housecall Pro customer export: four address blocks and its own flags
   if(h.includes('address_1 street line 1')&&(h.includes('customer is contractor')||h.includes('lifetime value'))) return 'hcpcust';
   // A bought client list: a name, one contact column, a rough address
@@ -3037,7 +3083,63 @@ function convertAgendaJobs(data){
   return jobs;
 }
 
-const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template','acuity':'Acuity Scheduling','hcpcust':'Housecall Pro','purchased':'Bought client list','agenda':'Google Calendar + Square agenda'};
+// ─── Tekmetric customer export ──────────────────────────────────────────────
+// Shop-management export: one row per customer, a Type column that already says
+// Person or Business, and a separate contact person for business accounts.
+const TEK_JUNK_NAMES=new Set(['test','testing','tester','asdf','asdfasdf','name','shop','n a','na',
+  'none','unknown','xxx','xx','customer','no name','new customer']);
+function convertTekmetric(data){
+  const out=[]; let dropped=0, biz=0, fakePhone=0, noContact=0;
+  for(const r of data){
+    let first=cl(straightenQuotes(r['First Name']));
+    let last=cl(straightenQuotes(r['Last Name']));
+    // Tekmetric leaves First Name empty for a company and puts the company in
+    // Last Name. Urable wants the whole company in the first-name field.
+    const declared=cl(r['Type']).toLowerCase();
+    let ctype=declared==='business'?'Business':'Person';
+    let becameBiz=false;
+    if(!first&&last){ first=last; last=''; ctype='Business'; becameBiz=true; }
+
+    let phone=usPhone(r['Primary Phone']);
+    // 5555555555, 0000000000 — a placeholder, not a number anyone can call.
+    if(phone&&/^(\d)\1{9}$/.test(phone)){ phone=''; fakePhone++; }
+    const email=cleanEmail(r['Email']);
+    const a1=cl(r['Address Line 1']), a2=cl(r['Address Line 2']);
+    const city=cl(r['City']);
+    let st=cl(r['State/Province']).toUpperCase();
+    if(!/^[A-Z]{2}$/.test(st)) st='';          // "NULLUS" and friends
+    const zip=cl(r['Zip']).split('-')[0];
+
+    const bare=(first+' '+last).toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+    const hasContact=!!(phone||email||a1||zip);
+    // A row with a placeholder name AND nothing to contact them by is not a
+    // customer record. Anything with a real contact detail is kept, whatever
+    // the name looks like — that is the shop's data to correct, not ours.
+    if(!hasContact && (!bare || TEK_JUNK_NAMES.has(bare) || bare.split(' ').every(w=>TEK_JUNK_NAMES.has(w)))){
+      dropped++; continue;
+    }
+    if(!first&&!last) { dropped++; continue; }
+    if(!hasContact) noContact++;
+    if(becameBiz) biz++;
+
+    const np=[];
+    const cf=cl(r['Contact First Name']), clast=cl(r['Contact Last Name']);
+    if(cf||clast) np.push('Contact: '+(cf+' '+clast).trim());
+    const lead=cl(r['Lead Source']); if(lead) np.push('Lead Source: '+lead);
+    const bday=cl(r['Birthday']);    if(bday) np.push('Birthday: '+bday);
+    if(cl(r['Tax Exempt']).toLowerCase()==='yes') np.push('Tax exempt');
+    const note=cl(straightenQuotes(r['Notes'])); if(note) np.push(note);
+    const cid=cl(r['CustomerId']);   if(cid) np.push('Tekmetric ID: '+cid);
+
+    out.push([first,last,ctype,a1,a2,city,st,zip,countryFor(st,zip,phone),
+              phone,email,np.join(' | ').slice(0,1800),'']);
+  }
+  const rows=dedup(out);
+  rows._tek={dropped,biz,fakePhone,noContact};
+  return rows;
+}
+
+const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template','acuity':'Acuity Scheduling','tekmetric':'Tekmetric','hcpcust':'Housecall Pro','purchased':'Bought client list','agenda':'Google Calendar + Square agenda'};
 
 // One dispatch table, used by the single-file path and the multi-file path
 // alike — so a converter added later can't reach one and miss the other.
@@ -3060,6 +3162,7 @@ function convertCustomerRows(platform, raw, rawObjRows){
   if(platform==='jobsexport') return convertJobsExport(rawObjRows);
   if(platform==='acuity') return convertAcuity(rawObjRows);
   if(platform==='agenda') return convertAgendaSquare(rawObjRows);
+  if(platform==='tekmetric') return convertTekmetric(rawObjRows);
   if(platform==='hcpcust') return convertHCPCustomers(rawObjRows);
   if(platform==='purchased') return convertPurchasedList(rawObjRows);
   if(platform==='urable') return dedup(rawObjRows.map(r=>HEADERS.map(h=>cl(r[h]))).filter(r=>r.some(v=>v)));
