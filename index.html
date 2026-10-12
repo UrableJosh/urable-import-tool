@@ -254,6 +254,23 @@ tbody tr:last-child td{border-bottom:none}
         <input type="checkbox" id="tagOrigin" checked>
         <label for="tagOrigin">Tag each customer's origin as &ldquo;Imported from <span id="originName">previous system</span>&rdquo;</label>
       </div>
+      <div class="tax-split" id="taxSplit">
+        <label class="tax-head"><input type="checkbox" id="taxOn" onchange="taxToggle()">
+          <strong>This shop charges a tax or fee on every job</strong></label>
+        <div class="tax-body" id="taxBody">
+          <div class="tax-row">
+            <label>Called<input type="text" id="taxName" oninput="taxPreview()" value="Sales tax" size="14"></label>
+            <label>Rate<input type="text" id="taxRate" oninput="taxPreview()" value="" size="5" placeholder="11.5">%</label>
+          </div>
+          <label class="tax-inc">The amounts in this file&nbsp;
+            <select id="taxMode" onchange="taxPreview()">
+              <option value="mixed" selected>are a mix — work it out per job</option>
+              <option value="all">all already include it</option>
+              <option value="none">are all pre-tax, add it on top</option>
+            </select></label>
+          <div class="tax-note" id="taxNote"></div>
+        </div>
+      </div>
       <div style="margin-top:16px">
         <button class="btn" id="importBtn" onclick="startImport()">Start import</button>
       </div>
@@ -262,6 +279,15 @@ tbody tr:last-child td{border-bottom:none}
         <div class="progress-text" id="progressText"></div>
       </div>
 <style>
+.tax-split{margin-top:16px;border:1px solid #d0d7de;border-radius:8px;padding:12px 14px;font-size:13px;background:#fff;color:#111}
+.tax-head{display:flex;gap:8px;align-items:center;cursor:pointer}
+.tax-body{display:none;margin-top:10px;padding-left:24px}
+.tax-split.on .tax-body{display:block}
+.tax-row{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+.tax-row label{display:flex;gap:6px;align-items:center}
+.tax-row input[type=text]{padding:4px 6px;border:1px solid #d0d7de;border-radius:4px}
+.tax-inc{display:flex;gap:8px;align-items:flex-start;margin-top:10px;cursor:pointer}
+.tax-note{margin-top:8px;color:#57606a;line-height:1.45}
 .svc-map{background:#fff;color:#111;border:1px solid #d0d7de;border-radius:8px;padding:14px;margin:12px 0;font-size:13px;line-height:1.45}
 .svc-map-head{margin-bottom:10px}
 .svc-map-tbl{width:100%;border-collapse:collapse}
@@ -4281,6 +4307,82 @@ async function testConnection(){
   setTimeout(()=>{btn.textContent='Test connection';},4000);
 }
 
+// ─── Tax / fee split ────────────────────────────────────────────────────────
+// Square and most booking systems store the amount the customer paid, tax
+// included. Carried straight across, that whole amount becomes the line price
+// and the job shows no tax at all — which is what Perfect Auto saw. Divide the
+// rate back out, put the base on the line, and let the platform add the tax as
+// a fee, exactly once.
+function taxConfig(){
+  const on=document.getElementById('taxOn');
+  if(!on||!on.checked) return null;
+  const pct=parseFloat(String((document.getElementById('taxRate')||{}).value||'').replace(/[^\d.]/g,''));
+  if(!isFinite(pct)||pct<=0||pct>=100) return null;
+  const name=cl((document.getElementById('taxName')||{}).value)||'Tax';
+  const mode=((document.getElementById('taxMode')||{}).value)||'mixed';
+  return {name:name, rate:pct/100, pct:pct, mode:mode};
+}
+function taxToggle(){
+  const box=document.getElementById('taxSplit'), on=document.getElementById('taxOn');
+  if(box) box.classList.toggle('on',!!(on&&on.checked));
+  taxPreview();
+}
+function taxPreview(){
+  const el=document.getElementById('taxNote'); if(!el) return;
+  const c=taxConfig();
+  if(!c){ el.textContent=''; return; }
+  const n=escHtml(c.name);
+  if(c.mode==='all') el.innerHTML='Every amount is treated as tax-inclusive and divided back out. Customer totals do not change.';
+  else if(c.mode==='none') el.innerHTML='Every amount is treated as pre-tax and '+n+' is added on top. Customer totals go up by '+c.pct+'%.';
+  else el.innerHTML='Each line is judged on its own: an amount that divides by '+(1+c.rate).toFixed(3)+
+    ' onto a whole dollar already includes '+n+' and is split; a whole-dollar amount is pre-tax and has '+n+
+    ' added; anything else is left alone and reported, because guessing at it would change what the customer was charged.';
+}
+// Rewrite a job's line prices to the pre-tax base and attach the tax as a fee.
+// For a tax-inclusive file the fee is whatever is LEFT OVER after the bases,
+// never base × rate — that way the customer total matches to the cent, including
+// the source system's own rounding wobble ($139.37 and $139.38 both round-trip).
+function applyTaxSplit(jobs,cfg){
+  if(!cfg) return null;
+  let touched=0, feeTotal=0, baseTotal=0, incCount=0, preCount=0, skipped=0;
+  for(const j of jobs){
+    const n=(j.lineItems||[]).length; if(!n) continue;
+    const orig=[];
+    for(let i=0;i<n;i++){
+      const c=j.lineCents?Number(j.lineCents[i]):(i===0?(j.firstLineCents??j.perLineCents):j.perLineCents);
+      orig.push(Number(c)||0);
+    }
+    const origTotal=orig.reduce((a,b)=>a+b,0);
+    if(!origTotal) continue;
+    const base=[]; let fee=0;
+    for(const c of orig){
+      if(!c){ base.push(0); continue; }
+      // Does this amount already contain the tax? It does when dividing it out
+      // lands on a whole dollar — $111.50 / 1.115 is exactly $100.00. A shop
+      // prices in whole dollars; a tax-inclusive total almost never is.
+      const q=Math.round(c/(1+cfg.rate));
+      const incl = (q%100===0) && Math.abs(Math.round(q*(1+cfg.rate))-c)<=1;
+      const pre  = (c%100===0);
+      let kind=cfg.mode;
+      if(cfg.mode==='mixed') kind = incl?'all' : (pre?'none':'skip');
+      if(kind==='all'){ const b=Math.round(c/(1+cfg.rate)); base.push(b); fee+=c-b; incCount++; }
+      else if(kind==='none'){ base.push(c); fee+=Math.round(c*cfg.rate); preCount++; }
+      else { base.push(c); skipped++; }   // neither shape — leave the amount alone
+    }
+    const bTot=base.reduce((a,b)=>a+b,0);
+    j.lineCents=base;
+    j.subtotal=bTot;
+    j.perLineCents=Math.floor(bTot/n);
+    j.firstLineCents=bTot-j.perLineCents*(n-1);
+    j.adjustments=(j.adjustments||[]).slice();
+    if(fee>0) j.adjustments.push({type:'fee',name:cfg.name+' ('+cfg.pct+'%)',cents:fee});
+    const disc=j.adjustments.filter(a=>a.type!=='fee').reduce((a,b)=>a+(Number(b.cents)||0),0);
+    j.total=bTot+fee-disc;
+    touched++; feeTotal+=fee; baseTotal+=bTot;
+  }
+  return {touched,feeTotal,baseTotal,incCount,preCount,skipped};
+}
+
 // ─── Service mapping confirmation ───────────────────────────────────────────
 // Everything the matcher could not settle on its own stops here. A wrong bind
 // is a wrong price on a real customer's job, so the shop confirms it rather
@@ -4443,6 +4545,21 @@ async function importJobsRun(key){
       used.add(lab); out.set(c,lab);
     }
     return out;
+  }
+  // Before anything reads a line price: strip the tax back out, so the price
+  // points we match against the shop's catalog are the shop's own prices.
+  {
+    const tcfg=taxConfig();
+    const tres=applyTaxSplit(jobsData,tcfg);
+    if(tres&&tres.touched){
+      logLine(tcfg.name+' '+tcfg.pct+'%: '+tres.touched.toLocaleString()+' job(s) processed. '+
+        tres.incCount.toLocaleString()+' line(s) already included it and were split (customer total unchanged); '+
+        tres.preCount.toLocaleString()+' line(s) were pre-tax and had it added. '+
+        'Line prices now total $'+(tres.baseTotal/100).toFixed(2)+' with $'+(tres.feeTotal/100).toFixed(2)+
+        ' carried as a separate '+tcfg.name+' line.');
+      if(tres.skipped) logLine(tres.skipped.toLocaleString()+' line(s) matched neither shape \u2014 the amount was left exactly as it came over and no '+
+        tcfg.name+' was added. These are usually package prices split across lines; check them before you consider the import done.',true);
+    }
   }
   for(const j of jobsData){
     const ck=custKey(j.customer);
@@ -5107,7 +5224,7 @@ async function importJobsRun(key){
       const xa=j.updatedAt||j.end||j.start;
       if(xa) payload.canceledAt=xa;
     }
-    if(j.adjustments.length) payload.adjustments=j.adjustments.map(a=>({type:'discount',name:a.name,value:a.cents}));
+    if(j.adjustments.length) payload.adjustments=j.adjustments.map(a=>({type:a.type||'discount',name:a.name,value:a.cents}));
     if(jobNotes) payload.notes=jobNotes;
     const r=await apiFetch('/v1/jobs',{method:'POST',body:JSON.stringify(payload)},key);
     if(r.ok&&r.body&&r.body.success){
