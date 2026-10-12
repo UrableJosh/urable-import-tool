@@ -4347,6 +4347,10 @@ function applyTaxSplit(jobs,cfg){
   let touched=0, feeTotal=0, baseTotal=0, incCount=0, preCount=0, skipped=0;
   for(const j of jobs){
     const n=(j.lineItems||[]).length; if(!n) continue;
+    // Run the import twice in one session - a retry after errors, say - and the
+    // prices handed to us the second time are already the base. A whole-dollar
+    // base reads as "pre-tax", so the tax goes on a second time. Split once.
+    if(j._taxSplitDone) continue;
     const orig=[];
     for(let i=0;i<n;i++){
       const c=j.lineCents?Number(j.lineCents[i]):(i===0?(j.firstLineCents??j.perLineCents):j.perLineCents);
@@ -4378,6 +4382,7 @@ function applyTaxSplit(jobs,cfg){
     if(fee>0) j.adjustments.push({type:'fee',name:cfg.name+' ('+cfg.pct+'%)',cents:fee});
     const disc=j.adjustments.filter(a=>a.type!=='fee').reduce((a,b)=>a+(Number(b.cents)||0),0);
     j.total=bTot+fee-disc;
+    j._taxSplitDone=true;
     touched++; feeTotal+=fee; baseTotal+=bTot;
   }
   return {touched,feeTotal,baseTotal,incCount,preCount,skipped};
