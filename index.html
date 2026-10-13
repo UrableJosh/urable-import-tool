@@ -349,6 +349,8 @@ tbody tr:last-child td{border-bottom:none}
     <div class="check-row"><input type="checkbox" id="migDoCust" checked><label for="migDoCust">Customers</label></div>
     <div class="check-row"><input type="checkbox" id="migDoVeh" checked><label for="migDoVeh">Their vehicles / items</label></div>
     <div class="check-row"><input type="checkbox" id="migDoProd" checked><label for="migDoProd">Products &amp; services (with their price points and categories)</label></div>
+    <div class="check-row"><input type="checkbox" id="migDedupe"><label for="migDedupe">Merge duplicate customers as they are copied</label></div>
+    <p class="api-note" style="margin-top:2px">Off by default: a copy carries the account across as it stands. Switch it on and two records are merged only when they share a phone or email <em>and</em> their names agree &mdash; a household on one line, or two people with the same name, are left alone. The preview tells you how many would merge before you commit.</p>
 
     <div class="api-row" style="margin-top:16px">
       <button class="btn secondary" id="migPreviewBtn" onclick="migPreview()">Preview &mdash; read only</button>
@@ -3755,6 +3757,71 @@ const migNormVeh=s=>String(s||'').trim().toLowerCase().replace(/[^a-z0-9]+/g,' '
 // GET /v1/items returns the owner as a customerRef path; a POST body carries a
 // plain customerId. Read either, so matching can't silently miss and duplicate
 // every vehicle on a re-run.
+// Collapse duplicate customers WITHIN the source account, on the same rule the
+// file imports use: a shared phone or email merges two records only when the
+// names agree (or one is blank). A household shares a line and two Brandons
+// share a name, so an identifier alone is never enough.
+//
+// Unlike the CSV path there is nowhere to lose data here - the record shape
+// already holds several phones and emails, so a second number joins the array
+// instead of being flattened into a note.
+function migWantDedupe(){ const el=document.getElementById('migDedupe'); return !!(el&&el.checked); }
+function migDedupeCustomers(list){
+  const n=list.length;
+  const parent=Array.from({length:n},(_,i)=>i);
+  const find=x=>{while(parent[x]!==x){parent[x]=parent[parent[x]];x=parent[x];}return x;};
+  const union=(a,b)=>{a=find(a);b=find(b);if(a!==b)parent[b]=a;};
+  const nameOf=c=>migNormNm((c.firstName||'')+' '+(c.lastName||'')+' '+(c.companyName||''));
+  const compatible=(i,j)=>{const a=nameOf(list[i]),b=nameOf(list[j]);return !a||!b||a===b;};
+  let crossNoted=0;
+  const phoneMap={}, emailMap={};
+  for(let i=0;i<n;i++){
+    const c=list[i];
+    for(const p of (c.phoneNumbers||[])){
+      const k=migNormPhone(p&&p.value); if(!k) continue;
+      (phoneMap[k]=phoneMap[k]||[]).forEach(j=>{ if(compatible(i,j)) union(i,j); else crossNoted++; });
+      phoneMap[k].push(i);
+    }
+    for(const e of (c.emails||[])){
+      const k=String((e&&e.value)||'').trim().toLowerCase(); if(!k) continue;
+      (emailMap[k]=emailMap[k]||[]).forEach(j=>{ if(compatible(i,j)) union(i,j); else crossNoted++; });
+      emailMap[k].push(i);
+    }
+  }
+  const groups={};
+  for(let i=0;i<n;i++){ const r=find(i); (groups[r]=groups[r]||[]).push(i); }
+  const richness=c=>Object.keys(c||{}).filter(k=>{const v=c[k];
+    return v!=null&&v!==''&&!(Array.isArray(v)&&!v.length);}).length;
+  const out=[], mergedIds=[];
+  let merged=0;
+  for(const idxs of Object.values(groups)){
+    const recs=idxs.map(i=>list[i]).sort((a,b)=>richness(b)-richness(a));
+    const keep=JSON.parse(JSON.stringify(recs[0]));
+    const alsoIds=[recs[0].srcId];
+    for(const other of recs.slice(1)){
+      merged++;
+      alsoIds.push(other.srcId);
+      for(const f of ['phoneNumbers','emails','locations','customData']){
+        if(!Array.isArray(other[f])||!other[f].length) continue;
+        keep[f]=keep[f]||[];
+        const seen=new Set(keep[f].map(x=>JSON.stringify(x&&x.value!==undefined?x.value:x)));
+        for(const entry of other[f]){
+          const sig=JSON.stringify(entry&&entry.value!==undefined?entry.value:entry);
+          if(!seen.has(sig)){ seen.add(sig); keep[f].push(entry); }
+        }
+      }
+      for(const f of ['notes','companyName','firstName','lastName']){
+        if(!keep[f]&&other[f]) keep[f]=other[f];
+      }
+      if(other.notes&&keep.notes&&other.notes!==keep.notes) keep.notes=keep.notes+' | '+other.notes;
+    }
+    keep._mergedFrom=alsoIds;
+    out.push(keep);
+    mergedIds.push(alsoIds);
+  }
+  return {list:out, merged, crossNoted, groups:mergedIds};
+}
+
 const migOwnerId=it=>String((it&&(it.customerRef||it.customerId))||'').split('/').pop();
 // Industry belongs to the record, not to the CSV panel's dropdown. A lawn-care
 // account copied with the vehicle-care default turns every property into a
@@ -3996,7 +4063,7 @@ function migClean(v){
 function migPick(rec,allow,passthrough){
   const keep={},dropped=[];
   for(const k of Object.keys(rec||{})){
-    if(MIG_SERVER_FIELDS.has(k)) continue;
+    if(MIG_SERVER_FIELDS.has(k)||k==='_mergedFrom') continue;
     const v=migClean(rec[k]);
     if(v===undefined) continue;
     if(passthrough||allow.includes(k)) keep[k]=v; else dropped.push(k);
@@ -4115,14 +4182,20 @@ async function migRun(dry){
       const nm=migNormNm((c.firstName||'')+' '+(c.lastName||''));
       for(const p of (c.phoneNumbers||[])) { const k=migNormPhone(p.value)+'|'+nm; if(!custIndex[k]) custIndex[k]=c.id; }
       for(const e of (c.emails||[])) { const k=String(e.value||'').toLowerCase()+'|'+nm; if(!custIndex[k]) custIndex[k]=c.id; }
-      if(nm&&!custIndex['|'+nm]) custIndex['|'+nm]=c.id;
+      if(nm&&!custIndex['name|'+nm]) custIndex['name|'+nm]=c.id;
     }
+    // Name alone used to be an equal key, so a source record matched any
+    // destination customer with the same name. This account holds two Brandon
+    // Brandons on different numbers and two Caliber Collisions - almost
+    // certainly two branches - and either pair would have been fused. Match on
+    // an identifier wherever the source record has one, and fall back to the
+    // name only when it has neither a phone nor an email to go on.
     const custKeysOf=c=>{
       const nm=migNormNm((c.firstName||'')+' '+(c.lastName||''));
       const ks=[];
-      for(const p of (c.phoneNumbers||[])) ks.push(migNormPhone(p.value)+'|'+nm);
-      for(const e of (c.emails||[])) ks.push(String(e.value||'').toLowerCase()+'|'+nm);
-      ks.push('|'+nm);
+      for(const p of (c.phoneNumbers||[])){ const k=migNormPhone(p&&p.value); if(k) ks.push(k+'|'+nm); }
+      for(const e of (c.emails||[])){ const k=String((e&&e.value)||'').trim().toLowerCase(); if(k) ks.push(k+'|'+nm); }
+      if(!ks.length&&nm) ks.push('name|'+nm);
       return ks;
     };
     const prodIndex={};
@@ -4130,10 +4203,23 @@ async function migRun(dry){
     const existingCats=new Set(dProds.map(p=>String(p.categoryName||(p.category&&p.category.name)||'').trim().toLowerCase()).filter(Boolean));
 
     const idMap={};             // source customer id -> destination customer id
+    // Collapse duplicates inside the source first, when asked. Every id in a
+    // merged group is pointed at the survivor, so the vehicles and jobs hanging
+    // off the losing records follow the customer that was kept.
+    let custList=sCust, dedupeRes=null;
+    if(migWantDedupe()){
+      dedupeRes=migDedupeCustomers(sCust);
+      custList=dedupeRes.list;
+      migLog(dedupeRes.merged.toLocaleString()+' duplicate customer record(s) in the source were merged into '+
+        custList.length.toLocaleString()+' customers'+
+        (dedupeRes.crossNoted?('; '+dedupeRes.crossNoted.toLocaleString()+
+          ' record(s) share a phone or email under a different name and were kept apart'):'')+'.');
+    }
     const custToCreate=[], custMatched=[];
-    for(const c of sCust){
+    for(const c of custList){
       const hit=custKeysOf(c).map(k=>custIndex[k]).find(Boolean);
-      if(hit){ idMap[c.srcId]=hit; custMatched.push(c); } else custToCreate.push(c);
+      const ids=c._mergedFrom||[c.srcId];
+      if(hit){ for(const id of ids) idMap[id]=hit; custMatched.push(c); } else custToCreate.push(c);
     }
     const prodToCreate=[], prodMatched=[];
     for(const p of sProds){
@@ -4212,7 +4298,16 @@ async function migRun(dry){
       migPlan={sCust,sItems,sProds};
       migLog('— preview only, nothing was written —','log-ok');
       const rows=[];
-      if(doCust) rows.push('<strong>'+custToCreate.length.toLocaleString()+'</strong> customers created, '+custMatched.length.toLocaleString()+' already there');
+      if(doCust){
+        rows.push('<strong>'+custToCreate.length.toLocaleString()+'</strong> customers created, '+custMatched.length.toLocaleString()+' already there');
+        if(dedupeRes) rows.push('<strong>'+dedupeRes.merged.toLocaleString()+'</strong> duplicate record(s) merged before copying'+
+          (dedupeRes.crossNoted?(', '+dedupeRes.crossNoted.toLocaleString()+' kept apart because the names differ'):''));
+        else {
+          // say what switching it on would do, without doing it
+          const probe=migDedupeCustomers(sCust);
+          if(probe.merged) rows.push(probe.merged.toLocaleString()+' duplicate record(s) are in the source and will be copied as they are \u2014 tick \u201cMerge duplicate customers\u201d to collapse them');
+        }
+      }
       if(doCust&&doVeh) rows.push('<strong>'+itemsToCreate.length.toLocaleString()+'</strong> vehicles created, '+itemsMatched.toLocaleString()+' already there'+(itemsOrphan?', '+itemsOrphan+' with no owner (skipped)':''));
       if(doProd) rows.push('<strong>'+prodToCreate.length.toLocaleString()+'</strong> products/services created ('+pricePts.toLocaleString()+' price points, carried with their original SKUs), '+prodMatched.length.toLocaleString()+' matched by name');
       if(doProd&&sProds.length) rows.push('Category source: '+escHtml(migFmtTally(sProds._categoryVia||{})));
@@ -4253,7 +4348,10 @@ async function migRun(dry){
         if(!keep.firstName&&!keep.companyName) keep.firstName='Customer';
         if(!keep.type) keep.type='person';
         const r=await migFetch(dBase,'/v1/customers',{method:'POST',body:JSON.stringify(keep)},dstKey,false);
-        if(r.ok&&r.body&&r.body.success){ idMap[c.srcId]=r.body.data.id; created.cust++; }
+        if(r.ok&&r.body&&r.body.success){
+          for(const id of (c._mergedFrom||[c.srcId])) idMap[id]=r.body.data.id;
+          created.cust++;
+        }
         else fail('customer '+((c.firstName||'')+' '+(c.lastName||'')).trim(),(r.body&&r.body.error)||('HTTP '+r.status));
         tick('Copying customers');
       });
