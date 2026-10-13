@@ -5396,6 +5396,35 @@ async function importJobsRun(key){
         tcfg.name+' was added. These are usually package prices split across lines; check them before you consider the import done.',true);
     }
   }
+  // A shop types the same service two ways in one export \u2014 Fort Worth has
+  // "Add on" on 18 lines and "Add On" on 3, and "Ceramic coating special"
+  // against "Ceramic coating Special". Keyed by the raw name those become two
+  // products that differ only in a capital letter, which is a mess in the
+  // catalog and splits the price points between them. Collapse names that
+  // differ ONLY by case and spacing \u2014 anything more is a judgement call that
+  // belongs to the matcher, not here \u2014 and keep the spelling the shop used most.
+  (function canonicaliseLineNames(){
+    const seen={};
+    for(const j of jobsData) for(const li of (j.lineItems||[])){
+      const k=String(li||'').toLowerCase().replace(/\s+/g,' ').trim();
+      if(!k) continue;
+      (seen[k]=seen[k]||{})[li]=(seen[k][li]||0)+1;
+    }
+    const canon={}; let collapsed=0, groups=0;
+    for(const k of Object.keys(seen)){
+      const spellings=Object.keys(seen[k]);
+      if(spellings.length<2) continue;
+      groups++; collapsed+=spellings.length-1;
+      let best=spellings[0];
+      for(const sp of spellings) if(seen[k][sp]>seen[k][best]) best=sp;
+      for(const sp of spellings) canon[sp]=best;
+    }
+    if(!groups) return;
+    for(const j of jobsData) j.lineItems=j.lineItems.map(li=>canon[li]||li);
+    logLine(collapsed+' service name'+(collapsed===1?'':'s')+' differed from another only by capitalisation or spacing and '+
+      (collapsed===1?'was':'were')+' folded into the spelling this shop used most, so the catalog gets '+groups+
+      ' entr'+(groups===1?'y':'ies')+' instead of '+(groups+collapsed)+'.');
+  })();
   for(const j of jobsData){
     const ck=custKey(j.customer);
     if(!uniqueCust[ck]) uniqueCust[ck]=j.customer;
