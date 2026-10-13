@@ -3981,8 +3981,14 @@ function migClean(v){
     }
     const keys=Object.keys(out);
     if(!keys.length) return undefined;
-    // {label:'Mobile'} with its value gone is not a phone number, it is a husk.
-    if(keys.length===1&&(keys[0]==='label'||keys[0]==='type')) return undefined;
+    // An entry that HAD a value and no longer does is a husk, whatever its other
+    // keys are called. This is the real shape behind the 52 failures: a lead form
+    // where the customer skipped a question leaves
+    //   customData:[{name:'Address', value:null}]
+    // and a phone slot left blank leaves {label:'Mobile', value:null}. Both are
+    // the same thing — a field with no field in it — so neither is sent.
+    if(('value' in v)&&!('value' in out)) return undefined;
+    if(keys.length===1&&(keys[0]==='label'||keys[0]==='type'||keys[0]==='name')) return undefined;
     return out;
   }
   return v;   // false and 0 are real values and stay
