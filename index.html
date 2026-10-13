@@ -1461,17 +1461,28 @@ function processJobsBundle(parts){
   // An OrbisX set is four files per location and the shop may drop all twenty
   // at once. Claim them before anything else: they are recognised by their own
   // headers, so a mixed drop still sorts itself out.
-  const orb={invoices:[],calendar:[],payments:[],clients:[]}, orbNames=[];
+  const orb={invoices:[],calendar:[],payments:[],clients:[]}, orbNames=[], orbClients=[];
   const rest=[];
   for(const p of parts){
     const sh=shapeRaw(p.raw);
     const k=orbKind(sh.headerRow);
-    if(k){ orb[k].push({loc:orbLocation(p.name),rows:sh.objRows,name:p.name}); orbNames.push(p.name); }
-    else rest.push(p);
+    if(!k){ rest.push(p); continue; }
+    // The clients list makes customers, not jobs. Dropping all twenty files in
+    // this box must not report it as read and then quietly ignore it.
+    if(k==='clients'){ orbClients.push(p.name); continue; }
+    orb[k].push({loc:orbLocation(p.name),rows:sh.objRows,name:p.name});
+    orbNames.push(p.name);
   }
   if(orb.invoices.length||orb.calendar.length){
-    if(!orb.invoices.length&&!orb.calendar.length) return;
-    return processOrbisJobs(orb,orbNames,rest.map(p=>p.name));
+    const skip=rest.map(p=>p.name);
+    if(orbClients.length) skip.push(orbClients.join(', ')+' \u2014 the OrbisX client list'+
+      (orbClients.length===1?'':'s')+', which belong'+(orbClients.length===1?'s':'')+
+      ' in the customers box. Run '+(orbClients.length===1?'it':'them')+' there FIRST so these jobs attach to the full records instead of the thin ones built from the invoices.');
+    return processOrbisJobs(orb,orbNames,skip);
+  }
+  if(orbClients.length){
+    showError('Those are OrbisX client lists ('+orbClients.join(', ')+'). They make customers, not jobs \u2014 drop them in the customers box. The jobs box wants the invoices, calendar events and payments files.');
+    return;
   }
   parts=rest.length?rest:parts;
   let appts=null, series=null, unknown=[];
