@@ -3959,12 +3959,40 @@ function migShape(list,n){
 // destination's shape. Carrying everything is both more faithful and safer than
 // an allowlist — a lawn-care property has fields no vehicle-shaped list would
 // name, and an allowlist would quietly drop them.
+// A null that sits INSIDE a structure used to go across untouched: the top-level
+// sweep below never looked deeper than one key. A record carrying
+//   phoneNumbers:[{label:'Mobile', value:null}]
+// was posted exactly like that, and the API answered
+//   "Cannot read properties of null (reading 'toString')"
+// — its own crash, leaked as an error string, which failed 52 of 881 customers
+// on an account-to-account copy. Nothing should fail moving between two Urable
+// accounts, so strip empties all the way down before anything is sent.
+function migClean(v){
+  if(v===null||v===undefined||v==='') return undefined;
+  if(Array.isArray(v)){
+    const out=v.map(migClean).filter(x=>x!==undefined);
+    return out.length?out:undefined;
+  }
+  if(typeof v==='object'){
+    const out={};
+    for(const k of Object.keys(v)){
+      const c=migClean(v[k]);
+      if(c!==undefined) out[k]=c;
+    }
+    const keys=Object.keys(out);
+    if(!keys.length) return undefined;
+    // {label:'Mobile'} with its value gone is not a phone number, it is a husk.
+    if(keys.length===1&&(keys[0]==='label'||keys[0]==='type')) return undefined;
+    return out;
+  }
+  return v;   // false and 0 are real values and stay
+}
 function migPick(rec,allow,passthrough){
   const keep={},dropped=[];
   for(const k of Object.keys(rec||{})){
     if(MIG_SERVER_FIELDS.has(k)) continue;
-    const v=rec[k];
-    if(v==null||v===''||(Array.isArray(v)&&!v.length)) continue;
+    const v=migClean(rec[k]);
+    if(v===undefined) continue;
     if(passthrough||allow.includes(k)) keep[k]=v; else dropped.push(k);
   }
   return {keep,dropped};
