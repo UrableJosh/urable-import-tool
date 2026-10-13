@@ -346,9 +346,9 @@ tbody tr:last-child td{border-bottom:none}
     </div>
     <p class="api-note" style="margin-top:4px">Optional, and only needed if the preview says categories are unresolved: the API returns a product's category as an internal reference, not a name. Export Products/Services from the <em>source</em> account and drop it here &mdash; the copy reads the real category names from it.</p>
 
-    <div class="check-row"><input type="checkbox" id="migDoCust" checked><label for="migDoCust">Customers</label></div>
-    <div class="check-row"><input type="checkbox" id="migDoVeh" checked><label for="migDoVeh">Their vehicles / items</label></div>
-    <div class="check-row"><input type="checkbox" id="migDoProd" checked><label for="migDoProd">Products &amp; services (with their price points and categories)</label></div>
+    <div class="check-row"><input type="checkbox" id="migDoCust"><label for="migDoCust">Customers</label></div>
+    <div class="check-row"><input type="checkbox" id="migDoVeh"><label for="migDoVeh">Their vehicles / items</label></div>
+    <div class="check-row"><input type="checkbox" id="migDoProd"><label for="migDoProd">Products &amp; services (with their price points and categories)</label></div>
     <div class="check-row"><input type="checkbox" id="migDedupe"><label for="migDedupe">Merge duplicate customers as they are copied</label></div>
     <p class="api-note" style="margin-top:2px">Off by default: a copy carries the account across as it stands. Switch it on and two records are merged only when they share a phone or email <em>and</em> their names agree &mdash; a household on one line, or two people with the same name, are left alone. The preview tells you how many would merge before you commit.</p>
 
