@@ -3357,6 +3357,14 @@ function orbClassify(name,cents){
   // follows the amount in both cases.
   if(cents<0){
     if(ORB_DEP.test(n)) return 'deposit';
+    // A negative line with no name at all is the deposit credit, not a
+    // discount. Fort Worth invoice 830305 is one: a nameless -$54.12 against
+    // a $795 coating, with the $54.12 collected under its own invoice. Read as
+    // a discount it took the deposit off the total AND counted it as paid, so
+    // the job came to $806.47 when the customer's own ledger says $860.59.
+    // Every named negative in these exports is a deposit variant bar one real
+    // "Discount", so the nameless ones are not a guess.
+    if(!n) return 'deposit';
     return 'credit';
   }
   if(!n) return 'blank';
