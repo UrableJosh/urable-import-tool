@@ -4004,8 +4004,13 @@ function processRaw(raw, filename){
   let rows=[], dupesBefore=0;
   try{
     if(!['shopmonkey','smfleet','billship'].includes(platform)) dupesBefore=rawObjRows.length;
+    // One OrbisX client list on its own needs its location tag too, not only a
+    // five-location drop.
+    orbisClientLoc=(platform==='orbisclients')?orbLocation(filename):'';
     rows=convertCustomerRows(platform, raw, rawObjRows);
+    orbisClientLoc='';
   }catch(err){
+    orbisClientLoc='';
     showError('Conversion error: '+err.message);
     return;
   }
