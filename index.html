@@ -5563,6 +5563,68 @@ function confirmServiceMapping(rows, allCatalogNames){
   });
 }
 
+// Two written forms of one street. Abbreviations are folded, a unit or suite
+// is dropped (it is the same building), and the house number is kept apart so
+// a line that never had one can still match the same street in the same town.
+const ADDR_WORDS=[[/\b(north|n)\b/g,'n'],[/\b(south|s)\b/g,'s'],[/\b(east|e)\b/g,'e'],
+  [/\b(west|w)\b/g,'w'],[/\b(northeast|ne)\b/g,'ne'],[/\b(northwest|nw)\b/g,'nw'],
+  [/\b(southeast|se)\b/g,'se'],[/\b(southwest|sw)\b/g,'sw'],
+  [/\b(street|str|st)\b/g,'st'],[/\b(avenue|aven|ave|av)\b/g,'ave'],[/\b(drive|drv|dr)\b/g,'dr'],
+  [/\b(road|rd)\b/g,'rd'],[/\b(boulevard|blvd)\b/g,'blvd'],[/\b(lane|ln)\b/g,'ln'],
+  [/\b(court|crt|ct)\b/g,'ct'],[/\b(circle|cir)\b/g,'cir'],[/\b(place|plc|pl)\b/g,'pl'],
+  [/\b(parkway|pkwy)\b/g,'pkwy'],[/\b(highway|hwy)\b/g,'hwy'],[/\b(terrace|terr|ter)\b/g,'ter'],
+  [/\b(trail|trl)\b/g,'trl'],[/\b(square|sq)\b/g,'sq'],[/\b(loop|lp)\b/g,'lp']];
+function addrNorm(v){
+  let t=cl(v).toLowerCase().replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim();
+  // "suite 1000", "apt 2b", "# 356" - the unit and its number come out, but
+  // only those: anything after them is still part of the address, and cutting
+  // to the end of the line took the town with it.
+  // "fl" is left alone on purpose; it is Florida far more often than a floor.
+  t=t.replace(/\b(suite|ste|apartment|apt|unit|bldg|building|floor|rm|room)\b\s*[a-z0-9-]{0,6}/g,' ').trim();
+  for(const [re,to] of ADDR_WORDS) t=t.replace(re,to);
+  return t.replace(/\s+/g,' ').trim();
+}
+// The street line cannot be trusted on its own: the same export hands back
+// "233 E Wilbur Ave" with the town in its own field on one row and
+// "233 E Wilbur Ave, Lake Mary, FL 32746, USA" all in line 1 on the next.
+// Build the key from everything there is, then strip the tail that carries no
+// information about WHERE - country, postcode, state - so both spellings land
+// on the same key.
+function addrKey(a){
+  const parts=[a&&(a.a1||a.line1), a&&a.city, a&&a.state, a&&(a.zip||a.postalCode)]
+    .map(x=>cl(x)).filter(Boolean).join(' ');
+  let t=addrNorm(parts).split(' ').filter(Boolean);
+  for(let guard=0; guard<6 && t.length; guard++){
+    const last=t[t.length-1];
+    if(last==='usa'||last==='us'||last==='canada'||/^\d{5}(\d{4})?$/.test(last)||US_STATES.has(last.toUpperCase())) t.pop();
+    else break;
+  }
+  // The town repeated once in the line and again in its own field.
+  const city=addrNorm(a&&a.city).split(' ').filter(Boolean);
+  if(city.length&&t.length>city.length){
+    const tail=t.slice(-city.length).join(' ');
+    const before=t.slice(0,-city.length);
+    if(tail===city.join(' ')&&before.slice(-city.length).join(' ')===city.join(' ')) t=before;
+  }
+  const line=t.join(' ');
+  const m=/^(\d+)\s+(.*)$/.exec(line);
+  return {num:m?m[1]:'', street:m?m[2]:line,
+          city:city.join(' '),
+          zip:cl(a&&(a.zip||a.postalCode)).replace(/\D/g,'').slice(0,5)};
+}
+function sameAddr(x,y){
+  if(!x.street||!y.street) return false;
+  if(x.street!==y.street) return false;
+  if(x.zip&&y.zip&&x.zip!==y.zip) return false;
+  // One of them simply never carried a house number.
+  if(!x.num||!y.num) return true;
+  return x.num===y.num;
+}
+function addrDetail(a){
+  const k=addrKey(a);
+  return (k.num?2:0)+(k.city?1:0)+(k.zip?1:0)+(cl(a&&(a.state))?1:0);
+}
+
 function logLine(msg,isErr){
   const log=document.getElementById('importLog');
   log.style.display='block';
@@ -5621,6 +5683,11 @@ async function importJobsRun(key){
   const DEFAULT_SKU='\u0000default';
   const prodPriceSizes={}; // product name -> Map(cents -> Map(size -> count))
   const prodUseCount={};   // product name -> how many job lines use it
+  // Every distinct address a customer's jobs were done at. A mobile shop books
+  // the same place three ways \u2014 "East Wilbur Avenue, Lake Mary", "E Wilbur
+  // Ave, Lake Mary" and "E Wilbur Ave, Lake Mary, FL 32746" are one address \u2014
+  // so they are folded before anything is written.
+  const custAddrs={};      // customer key -> [{a1,a2,city,state,zip,country}]
   const prodCatVotes={};   // product name -> {category: how many lines said so}
   // Set by converters whose source carries the shop's own category names
   // rather than a foreign system's internal ones.
@@ -5711,6 +5778,14 @@ async function importJobsRun(key){
   for(const j of jobsData){
     const ck=custKey(j.customer);
     if(!uniqueCust[ck]) uniqueCust[ck]=j.customer;
+    if(j.customer&&(cl(j.customer.a1)||cl(j.customer.city))){
+      const list=(custAddrs[ck]=custAddrs[ck]||[]);
+      const k=addrKey(j.customer);
+      const at=list.findIndex(x=>sameAddr(addrKey(x),k));
+      // Keep the fullest spelling: a house number and a postcode beat neither.
+      if(at<0) list.push(j.customer);
+      else if(addrDetail(j.customer)>addrDetail(list[at])) list[at]=j.customer;
+    }
     j.lineItems.forEach((li,idx)=>{
       const pname=useCatalog?li:GENERIC;
       // lineCents: true per-line price from the source. Falls back to the even
@@ -5803,7 +5878,7 @@ async function importJobsRun(key){
   let totalOps=custList.length+prodList.length+vehList.length+jobsData.length+payPlanned;
   let done=0, createdCust=0, createdProd=0, createdVeh=0, createdJobs=0, failedJobs=0;
   let reusedCust=0, reusedVeh=0, reusedProd=0, createdPayments=0, skippedJobs=0, steppedDown=0;
-  let filledAddr=0, failedAddr=0;
+  let filledAddr=0, failedAddr=0, filledMain=0, filledExtra=0;
   let priceDrift=0; // jobs whose returned total does not match the source
   const madeJobs=[]; // jobs created this run, for the payments phase
   let paymentsBlocked=false;
@@ -6212,72 +6287,121 @@ async function importJobsRun(key){
     tick('Creating customers');
   });
 
-  // 1b) A customer we matched keeps whatever the account already had, so an
-  // address that only exists in the export never reaches them \u2014 which is how a
-  // production Fieldd run put 40 mobile jobs on customers with nowhere to go.
-  // Fill the gap. Strictly additive: only customers whose record carries NO
-  // address at all are touched, so nothing the shop entered is ever replaced.
-  const needAddr=custList.filter(([ck,c])=>custMap[ck]&&!custHasLocation.has(custMap[ck])&&locationsFor(c));
+  // 1b) Addresses from the jobs, onto the customers we matched rather than
+  // created. Two cases, and neither one overwrites anything:
+  //   - the customer has no address at all  -> give them this one as Main
+  //   - the customer has one, and the jobs were done somewhere else
+  //                                         -> add that as another location
+  // A production Fieldd run matched all 43 customers and created none, so the
+  // export's addresses never reached them and 40 mobile jobs had nowhere to go.
+  const exCustById={}; for(const c of exCust) exCustById[c.id]=c;
+  function existingAddrsOf(id){
+    const c=exCustById[id]; if(!c) return [];
+    return (c.locations||[]).map(l=>(l&&l.value&&l.value.address)||null).filter(Boolean);
+  }
+  function addrPayload(a){
+    const iso=isoCountry(a.country)||inferISO(a.state,a.zip,a.phone);
+    if(!iso) return null;
+    const o={country:iso};
+    if(cl(a.a1))o.line1=cl(a.a1); if(cl(a.a2))o.line2=cl(a.a2); if(cl(a.city))o.city=cl(a.city);
+    if(cl(a.state))o.state=cl(a.state); if(cl(a.zip))o.postalCode=cl(a.zip);
+    return o;
+  }
+  // What this customer's jobs say that the account does not already hold.
+  function newLocationsFor(ck,id){
+    const found=custAddrs[ck]||[];
+    if(!found.length) return null;
+    const have=existingAddrsOf(id).map(addrKey);
+    const out=((exCustById[id]||{}).locations||[]).slice();
+    const wasEmpty=!out.length;
+    const addedKeys=[]; let added=0;
+    for(const a of found){
+      const k=addrKey(a);
+      if(have.some(h=>sameAddr(h,k))) continue;
+      if(addedKeys.some(h=>sameAddr(h,k))) continue;
+      const ap=addrPayload(a); if(!ap) continue;
+      addedKeys.push(k);
+      let label=(wasEmpty&&!added)?'Main':'Service address';
+      if(out.some(l=>cl(l&&l.label).toLowerCase()===label.toLowerCase())){
+        let n2=2;
+        while(out.some(l=>cl(l&&l.label).toLowerCase()===(label+' '+n2).toLowerCase())) n2++;
+        label=label+' '+n2;
+      }
+      out.push({label:label,value:{address:ap}});
+      added++;
+    }
+    if(!added) return null;
+    return {locations:out, added:added, wasEmpty:wasEmpty};
+  }
+
+  const needAddr=[];
+  for(const [ck,c] of custList){
+    const id=custMap[ck]; if(!id) continue;
+    const plan=newLocationsFor(ck,id);
+    if(plan) needAddr.push([ck,c,id,plan]);
+  }
   if(needAddr.length){
     totalOps+=needAddr.length;
     // Whether PATCH merges into the record or replaces it is not documented,
     // and the difference is somebody's customer list. Prove it on the first
     // record before touching the rest: read it, patch it, read it back, and
     // check every field that was there is still there. If anything went
-    // missing, put it straight back and stop \u2014 one record disturbed and
-    // restored, not forty-three quietly emptied.
+    // missing, put it straight back and stop - one record disturbed and
+    // restored, not a whole list quietly emptied. The locations array is sent
+    // whole either way, so an append is correct under both behaviours.
     let patchSafe=null;
-    async function fillOne(id,c,verify){
+    async function fillOne(id,plan,verify){
       let before=null;
       if(verify){
         const g=await apiFetch('/v1/customers/'+id,{},key);
         before=(g.ok&&g.body&&g.body.data)||null;
       }
       const r=await apiFetch('/v1/customers/'+id,{method:'PATCH',
-        body:JSON.stringify({locations:locationsFor(c)})},key);
+        body:JSON.stringify({locations:plan.locations})},key);
       if(!(r.ok&&r.body&&r.body.success)) return {ok:false,msg:(r.body&&r.body.error)||('HTTP '+r.status)};
       if(verify&&before){
         const g2=await apiFetch('/v1/customers/'+id,{},key);
         const after=(g2.ok&&g2.body&&g2.body.data)||null;
         const lost=[];
         if(after){
-          for(const f of ['firstName','lastName','notes','type','status','origin']){
+          for(const f of ['firstName','lastName','notes','type','status','origin'])
             if(before[f]&&!after[f]) lost.push(f);
-          }
-          for(const f of ['emails','phoneNumbers']){
+          for(const f of ['emails','phoneNumbers'])
             if((before[f]||[]).length&&!(after[f]||[]).length) lost.push(f);
-          }
+          if((before.locations||[]).length>(after.locations||[]).length) lost.push('an existing location');
         } else lost.push('(could not re-read the record)');
         if(lost.length){
-          // Put it back exactly as it was, then refuse to do the rest.
           await apiFetch('/v1/customers/'+id,{method:'PATCH',body:JSON.stringify(before)},key);
-          return {ok:false,unsafe:true,msg:'PATCH replaced the record instead of merging \u2014 it dropped '+lost.join(', ')};
+          return {ok:false,unsafe:true,msg:'PATCH replaced the record instead of merging - it dropped '+lost.join(', ')};
         }
       }
       return {ok:true};
     }
-    const [firstCk,firstC]=needAddr[0];
-    const probe=await fillOne(custMap[firstCk],firstC,true);
+    const first=needAddr[0];
+    const probe=await fillOne(first[2],first[3],true);
     tick('Filling in addresses');
     if(probe.unsafe){
       patchSafe=false;
-      logLine('Not filling in customer addresses: '+probe.msg+'. The one record touched has been restored. '+
+      logLine('Not writing customer addresses: '+probe.msg+'. The one record touched has been restored. '+
         'Mobile jobs for customers with no address will be imported as shop jobs instead.',true);
       totalOps-=needAddr.length-1;
     } else if(probe.ok){
-      patchSafe=true; custHasLocation.add(custMap[firstCk]); filledAddr++;
-    } else { failedAddr++; err('address for '+firstC.name,probe.msg); patchSafe=true; }
+      patchSafe=true; custHasLocation.add(first[2]);
+      filledAddr+=first[3].added; if(first[3].wasEmpty) filledMain++; else filledExtra++;
+    } else { failedAddr++; err('address for '+first[1].name,probe.msg); patchSafe=true; }
     if(patchSafe){
-      await pool(needAddr.slice(1), 4, async ([ck,c])=>{
-        const id=custMap[ck];
-        const r=await fillOne(id,c,false);
-        if(r.ok){ custHasLocation.add(id); filledAddr++; }
+      await pool(needAddr.slice(1), 4, async ([ck,c,id,plan])=>{
+        const r=await fillOne(id,plan,false);
+        if(r.ok){ custHasLocation.add(id); filledAddr+=plan.added;
+          if(plan.wasEmpty) filledMain++; else filledExtra++; }
         else { failedAddr++; err('address for '+c.name,r.msg); }
         tick('Filling in addresses');
       });
-      logLine(filledAddr.toLocaleString()+' existing customer(s) had no address on the account and were given the one from this export'+
-        (failedAddr?(' \u2014 '+failedAddr.toLocaleString()+' could not be updated, see above'):'')+
-        '. Customers who already had an address were left untouched.');
+      logLine(filledAddr.toLocaleString()+' address(es) written to '+(filledMain+filledExtra).toLocaleString()+
+        ' existing customer(s): '+filledMain.toLocaleString()+' who had none on file, '+
+        filledExtra.toLocaleString()+' who had one and were serviced somewhere else as well'+
+        (failedAddr?(' - '+failedAddr.toLocaleString()+' could not be updated, see above'):'')+
+        '. No address already on a customer was changed or removed.');
     }
   }
 
@@ -6600,7 +6724,7 @@ async function importJobsRun(key){
     (failedJobs?', <span style="color:#dc2626">'+failedJobs+' jobs failed</span>.':'.')+
     (priceDrift?' <span style="color:#dc2626"><strong>'+priceDrift.toLocaleString()+' job(s) came back at a total that does not match the source</strong> — do not trust these figures; see the log.</span>':' Every job total matched the source.')+
     ' Historical payments, tips, and tax are preserved in each job\'s notes.'+
-    (filledAddr?' '+filledAddr.toLocaleString()+' existing customer(s) were given the address from this export (none were overwritten).':'')+
+    (filledAddr?' '+filledAddr.toLocaleString()+' address(es) added to existing customers ('+filledMain.toLocaleString()+' who had none, '+filledExtra.toLocaleString()+' as an extra service address) \u2014 nothing existing was changed.':'')+
     (steppedDown?' <span style="color:#b45309"><strong>'+steppedDown.toLocaleString()+' mobile job(s) were imported as shop jobs</strong> because those customers have no address on the account — each one says so in its notes, and the source address is there. Add the address to the customer and they can be switched back.</span>':'')+
     (gs?'<div style="margin-top:8px;font-size:12.5px"><strong>Failure breakdown:</strong><br>'+gs+'</div>':'');
   clearInterval(_jobWatchdog);
