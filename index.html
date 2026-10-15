@@ -5621,6 +5621,7 @@ async function importJobsRun(key){
   const DEFAULT_SKU='\u0000default';
   const prodPriceSizes={}; // product name -> Map(cents -> Map(size -> count))
   const prodUseCount={};   // product name -> how many job lines use it
+  const prodCatVotes={};   // product name -> {category: how many lines said so}
   // Set by converters whose source carries the shop's own category names
   // rather than a foreign system's internal ones.
   const srcOwnsCategories=!!(jobsData&&jobsData._ownCategories);
@@ -5717,7 +5718,16 @@ async function importJobsRun(key){
       const cents=j.lineCents?j.lineCents[idx]:(idx===0?(j.firstLineCents??j.perLineCents):j.perLineCents);
       (prodVariants[pname]=prodVariants[pname]||new Set()).add(cents);
       prodUseCount[pname]=(prodUseCount[pname]||0)+1;
-      if(useCatalog&&j.lineCats&&j.lineCats[idx]&&!prodCategory[pname]) prodCategory[pname]=j.lineCats[idx];
+      // Tally every category the source files this service under rather than
+      // taking whichever line came first. Fieldd writes the category into the
+      // breadcrumb only when the booking carries one, so "Level 1 Interior
+      // Refresh" arrived as Interior Car Detailing Care on 8 lines and bare on
+      // 2 — and because the two bare ones came first, all ten lost the
+      // category. Position is not evidence; the count is.
+      if(useCatalog&&j.lineCats&&j.lineCats[idx]){
+        const t=(prodCatVotes[pname]=prodCatVotes[pname]||{});
+        t[j.lineCats[idx]]=(t[j.lineCats[idx]]||0)+1;
+      }
       // remember which vehicle sizes were charged this amount, so the price
       // variant can be labelled "Full Size Truck" instead of "Imported $495.00"
       const sz=j.lineSizes&&j.lineSizes[idx];
@@ -5731,6 +5741,20 @@ async function importJobsRun(key){
         raw:(j.vehicles.length>1?(j.vehiclesRaw||''):'')};
     });
   }
+  // Settle each service's category once every line has voted. A real category
+  // beats our own Imported placeholder even when fewer lines carry it, because
+  // "Imported" is what we write when the source said nothing at all.
+  (function settleCategories(){
+    for(const pname of Object.keys(prodCatVotes)){
+      const votes=prodCatVotes[pname];
+      let best='', bestN=-1;
+      for(const c of Object.keys(votes)){
+        if(c==='Imported') continue;
+        if(votes[c]>bestN){ bestN=votes[c]; best=c; }
+      }
+      prodCategory[pname]=best||'Imported';
+    }
+  })();
   if(!useCatalog){
     // chunk the generic entry's variants into multiple products if needed
     const all=[...(prodVariants[GENERIC]||new Set())].sort((a,b)=>a-b);
