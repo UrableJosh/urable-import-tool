@@ -5575,7 +5575,13 @@ const ADDR_WORDS=[[/\b(north|n)\b/g,'n'],[/\b(south|s)\b/g,'s'],[/\b(east|e)\b/g
   [/\b(parkway|pkwy)\b/g,'pkwy'],[/\b(highway|hwy)\b/g,'hwy'],[/\b(terrace|terr|ter)\b/g,'ter'],
   [/\b(trail|trl)\b/g,'trl'],[/\b(square|sq)\b/g,'sq'],[/\b(loop|lp)\b/g,'lp']];
 function addrNorm(v){
-  let t=cl(v).toLowerCase().replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim();
+  // ZIP+4 first, while the hyphen that identifies it still exists. Stripping
+  // punctuation ahead of this turns "32792-6172" into two tokens, and the
+  // orphaned "6172" then stops the tail-stripper dead, leaving the whole
+  // postcode sitting in the street key - so "32792-6172" and "32792" read as
+  // two different places when they are one driveway.
+  let t=cl(v).toLowerCase().replace(/\b(\d{5})-\d{4}\b/g,'$1')
+    .replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim();
   // "suite 1000", "apt 2b", "# 356" - the unit and its number come out, but
   // only those: anything after them is still part of the address, and cutting
   // to the end of the line took the town with it.
@@ -5597,6 +5603,7 @@ function addrKey(a){
   for(let guard=0; guard<6 && t.length; guard++){
     const last=t[t.length-1];
     if(last==='usa'||last==='us'||last==='canada'||/^\d{5}(\d{4})?$/.test(last)||US_STATES.has(last.toUpperCase())) t.pop();
+    else if(/^\d{4}$/.test(last)&&t.length>1&&/^\d{5}$/.test(t[t.length-2])) t.pop();
     else break;
   }
   // The town repeated once in the line and again in its own field.
