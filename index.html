@@ -5802,7 +5802,7 @@ async function importJobsRun(key){
   const payPlanned=jobsData.filter(j=>j.paid>0).length;
   let totalOps=custList.length+prodList.length+vehList.length+jobsData.length+payPlanned;
   let done=0, createdCust=0, createdProd=0, createdVeh=0, createdJobs=0, failedJobs=0;
-  let reusedCust=0, reusedVeh=0, reusedProd=0, createdPayments=0, skippedJobs=0;
+  let reusedCust=0, reusedVeh=0, reusedProd=0, createdPayments=0, skippedJobs=0, steppedDown=0;
   let priceDrift=0; // jobs whose returned total does not match the source
   const madeJobs=[]; // jobs created this run, for the payments phase
   let paymentsBlocked=false;
@@ -5851,6 +5851,18 @@ async function importJobsRun(key){
     pageAll('customers'), pageAll('items'), pageAll('products')
   ]);
   const exIndex={}, exByEmail={}, exByPhone={};
+  // Urable refuses a field job that has nowhere to happen: it needs a location
+  // on the job or an address on the customer. The address only ever gets
+  // written when WE create the customer — a customer we matched to an existing
+  // record keeps whatever that record has, which may be nothing. A production
+  // Fieldd run matched all 43 customers and created none, so 40 mobile jobs
+  // were rejected outright. Track who actually has an address so a field job
+  // can be stepped down to a shop job instead of being lost.
+  const custHasLocation=new Set();
+  for(const c of exCust){
+    if((c.locations||[]).some(l=>l&&l.value&&l.value.address&&
+        (l.value.address.line1||l.value.address.city))) custHasLocation.add(c.id);
+  }
   for(const c of exCust){
     // Urable echoes the first name into the last for a one-name customer, so
     // "Pierre" comes back as Pierre Pierre. Index both or the next run treats
@@ -6186,7 +6198,10 @@ async function importJobsRun(key){
       }
     }
     const r=await apiFetch('/v1/customers',{method:'POST',body:JSON.stringify(payload)},key);
-    if(r.ok&&r.body&&r.body.success){ custMap[ck]=r.body.data.id; createdCust++; }
+    if(r.ok&&r.body&&r.body.success){
+      custMap[ck]=r.body.data.id; createdCust++;
+      if(payload.locations) custHasLocation.add(r.body.data.id);
+    }
     else err('customer '+c.name,(r.body&&r.body.error)||('HTTP '+r.status));
     tick('Creating customers');
   });
@@ -6398,7 +6413,21 @@ async function importJobsRun(key){
       jobNotes=['Services: '+j.lineItems.join(', '),j.notes].filter(Boolean).join(' | ');
     }
     if(j.num) jobNotes=['Imported job #'+j.num,jobNotes].filter(Boolean).join(' | ');
-    const payload={customerId:custId,itemIds:itemIds,type:j.type,status:j.status,
+    // A mobile job whose customer has no address on the account cannot be
+    // created as a field job. Losing the job is the worst outcome; quietly
+    // changing where the work happened is the second worst. Make it a shop job
+    // and say so on the job, with the address the source gave, so the shop can
+    // see what it was and fix the customer record if they care.
+    let jobType=j.type;
+    if(jobType==='field'&&!custHasLocation.has(custId)){
+      jobType='shop'; steppedDown++;
+      const where=[j.customer.a1,j.customer.city,j.customer.state,j.customer.zip]
+        .map(x=>cl(x)).filter(Boolean).join(', ');
+      jobNotes=[jobNotes,'Mobile job in the source'+(where?(' at '+where):'')+
+        ' \u2014 imported as a shop job because this customer has no address on the account']
+        .filter(Boolean).join(' | ');
+    }
+    const payload={customerId:custId,itemIds:itemIds,type:jobType,status:j.status,
       industry:j.industry||selectedIndustry(),
       lineItems:lineItems,autoTax:false};
     // Never fire the "job scheduled" confirmation text/email on an import.
@@ -6496,6 +6525,7 @@ async function importJobsRun(key){
     (failedJobs?', <span style="color:#dc2626">'+failedJobs+' jobs failed</span>.':'.')+
     (priceDrift?' <span style="color:#dc2626"><strong>'+priceDrift.toLocaleString()+' job(s) came back at a total that does not match the source</strong> — do not trust these figures; see the log.</span>':' Every job total matched the source.')+
     ' Historical payments, tips, and tax are preserved in each job\'s notes.'+
+    (steppedDown?' <span style="color:#b45309"><strong>'+steppedDown.toLocaleString()+' mobile job(s) were imported as shop jobs</strong> because those customers have no address on the account — each one says so in its notes, and the source address is there. Add the address to the customer and they can be switched back.</span>':'')+
     (gs?'<div style="margin-top:8px;font-size:12.5px"><strong>Failure breakdown:</strong><br>'+gs+'</div>':'');
   clearInterval(_jobWatchdog);
   fill.style.width='100%';
