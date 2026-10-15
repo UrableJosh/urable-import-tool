@@ -5803,6 +5803,7 @@ async function importJobsRun(key){
   let totalOps=custList.length+prodList.length+vehList.length+jobsData.length+payPlanned;
   let done=0, createdCust=0, createdProd=0, createdVeh=0, createdJobs=0, failedJobs=0;
   let reusedCust=0, reusedVeh=0, reusedProd=0, createdPayments=0, skippedJobs=0, steppedDown=0;
+  let filledAddr=0, failedAddr=0;
   let priceDrift=0; // jobs whose returned total does not match the source
   const madeJobs=[]; // jobs created this run, for the payments phase
   let paymentsBlocked=false;
@@ -6176,6 +6177,18 @@ async function importJobsRun(key){
     await Promise.all(Array.from({length:Math.min(n,list.length)},w));
   }
 
+  // An address is only worth sending when a country can be established \u2014 the
+  // API rejects a location without one.
+  function locationsFor(c){
+    if(!(c.a1||c.city)) return null;
+    const iso=isoCountry(c.country)||inferISO(c.state,c.zip,c.phone);
+    if(!iso) return null;
+    const addr={country:iso};
+    if(c.a1)addr.line1=c.a1; if(c.a2)addr.line2=c.a2; if(c.city)addr.city=c.city;
+    if(c.state)addr.state=c.state; if(c.zip)addr.postalCode=c.zip;
+    return [{label:'Main',value:{address:addr}}];
+  }
+
   // 1) customers (skip the ones matched in the scan)
   await pool(custList, 4, async ([ck,c])=>{
     if(custMap[ck]){ tick('Matching customers'); return; }
@@ -6188,15 +6201,8 @@ async function importJobsRun(key){
     if(last) payload.lastName=last.replace(/^\w/,x=>x.toUpperCase());
     if(c.email) payload.emails=[{label:'Main',value:c.email}];
     if(c.phone) payload.phoneNumbers=[{label:'Mobile',value:c.phone.length===10?'+1'+c.phone:c.phone}];
-    if(c.a1||c.city){
-      const iso=isoCountry(c.country)||inferISO(c.state,c.zip,c.phone);
-      if(iso){
-        const addr={country:iso};
-        if(c.a1)addr.line1=c.a1; if(c.a2)addr.line2=c.a2; if(c.city)addr.city=c.city;
-        if(c.state)addr.state=c.state; if(c.zip)addr.postalCode=c.zip;
-        payload.locations=[{label:'Main',value:{address:addr}}];
-      }
-    }
+    const locs=locationsFor(c);
+    if(locs) payload.locations=locs;
     const r=await apiFetch('/v1/customers',{method:'POST',body:JSON.stringify(payload)},key);
     if(r.ok&&r.body&&r.body.success){
       custMap[ck]=r.body.data.id; createdCust++;
@@ -6206,7 +6212,76 @@ async function importJobsRun(key){
     tick('Creating customers');
   });
 
-  // 2) products — reuse when the existing entry already has every price we need.
+  // 1b) A customer we matched keeps whatever the account already had, so an
+  // address that only exists in the export never reaches them \u2014 which is how a
+  // production Fieldd run put 40 mobile jobs on customers with nowhere to go.
+  // Fill the gap. Strictly additive: only customers whose record carries NO
+  // address at all are touched, so nothing the shop entered is ever replaced.
+  const needAddr=custList.filter(([ck,c])=>custMap[ck]&&!custHasLocation.has(custMap[ck])&&locationsFor(c));
+  if(needAddr.length){
+    totalOps+=needAddr.length;
+    // Whether PATCH merges into the record or replaces it is not documented,
+    // and the difference is somebody's customer list. Prove it on the first
+    // record before touching the rest: read it, patch it, read it back, and
+    // check every field that was there is still there. If anything went
+    // missing, put it straight back and stop \u2014 one record disturbed and
+    // restored, not forty-three quietly emptied.
+    let patchSafe=null;
+    async function fillOne(id,c,verify){
+      let before=null;
+      if(verify){
+        const g=await apiFetch('/v1/customers/'+id,{},key);
+        before=(g.ok&&g.body&&g.body.data)||null;
+      }
+      const r=await apiFetch('/v1/customers/'+id,{method:'PATCH',
+        body:JSON.stringify({locations:locationsFor(c)})},key);
+      if(!(r.ok&&r.body&&r.body.success)) return {ok:false,msg:(r.body&&r.body.error)||('HTTP '+r.status)};
+      if(verify&&before){
+        const g2=await apiFetch('/v1/customers/'+id,{},key);
+        const after=(g2.ok&&g2.body&&g2.body.data)||null;
+        const lost=[];
+        if(after){
+          for(const f of ['firstName','lastName','notes','type','status','origin']){
+            if(before[f]&&!after[f]) lost.push(f);
+          }
+          for(const f of ['emails','phoneNumbers']){
+            if((before[f]||[]).length&&!(after[f]||[]).length) lost.push(f);
+          }
+        } else lost.push('(could not re-read the record)');
+        if(lost.length){
+          // Put it back exactly as it was, then refuse to do the rest.
+          await apiFetch('/v1/customers/'+id,{method:'PATCH',body:JSON.stringify(before)},key);
+          return {ok:false,unsafe:true,msg:'PATCH replaced the record instead of merging \u2014 it dropped '+lost.join(', ')};
+        }
+      }
+      return {ok:true};
+    }
+    const [firstCk,firstC]=needAddr[0];
+    const probe=await fillOne(custMap[firstCk],firstC,true);
+    tick('Filling in addresses');
+    if(probe.unsafe){
+      patchSafe=false;
+      logLine('Not filling in customer addresses: '+probe.msg+'. The one record touched has been restored. '+
+        'Mobile jobs for customers with no address will be imported as shop jobs instead.',true);
+      totalOps-=needAddr.length-1;
+    } else if(probe.ok){
+      patchSafe=true; custHasLocation.add(custMap[firstCk]); filledAddr++;
+    } else { failedAddr++; err('address for '+firstC.name,probe.msg); patchSafe=true; }
+    if(patchSafe){
+      await pool(needAddr.slice(1), 4, async ([ck,c])=>{
+        const id=custMap[ck];
+        const r=await fillOne(id,c,false);
+        if(r.ok){ custHasLocation.add(id); filledAddr++; }
+        else { failedAddr++; err('address for '+c.name,r.msg); }
+        tick('Filling in addresses');
+      });
+      logLine(filledAddr.toLocaleString()+' existing customer(s) had no address on the account and were given the one from this export'+
+        (failedAddr?(' \u2014 '+failedAddr.toLocaleString()+' could not be updated, see above'):'')+
+        '. Customers who already had an address were left untouched.');
+    }
+  }
+
+  // 2) products \u2014 reuse when the existing entry already has every price we need.
   // Otherwise create a companion entry in the Imported category, keyed by
   // name+category, rather than editing the shop's real catalog entry:
   // appending our variants to a customer's live service rewrites their pricing
@@ -6525,6 +6600,7 @@ async function importJobsRun(key){
     (failedJobs?', <span style="color:#dc2626">'+failedJobs+' jobs failed</span>.':'.')+
     (priceDrift?' <span style="color:#dc2626"><strong>'+priceDrift.toLocaleString()+' job(s) came back at a total that does not match the source</strong> — do not trust these figures; see the log.</span>':' Every job total matched the source.')+
     ' Historical payments, tips, and tax are preserved in each job\'s notes.'+
+    (filledAddr?' '+filledAddr.toLocaleString()+' existing customer(s) were given the address from this export (none were overwritten).':'')+
     (steppedDown?' <span style="color:#b45309"><strong>'+steppedDown.toLocaleString()+' mobile job(s) were imported as shop jobs</strong> because those customers have no address on the account — each one says so in its notes, and the source address is there. Add the address to the customer and they can be switched back.</span>':'')+
     (gs?'<div style="margin-top:8px;font-size:12.5px"><strong>Failure breakdown:</strong><br>'+gs+'</div>':'');
   clearInterval(_jobWatchdog);
