@@ -3434,6 +3434,9 @@ function convertFielddJobs(data){
   }
   st.sizeSpellingsFolded=sizeFolded;
   jobs._fieldd=st;
+  // Fieldd's breadcrumb carries the shop's own category names, so the import
+  // should build those categories rather than tipping everything into Imported.
+  jobs._ownCategories=true;
   return jobs;
 }
 
@@ -5618,6 +5621,9 @@ async function importJobsRun(key){
   const DEFAULT_SKU='\u0000default';
   const prodPriceSizes={}; // product name -> Map(cents -> Map(size -> count))
   const prodUseCount={};   // product name -> how many job lines use it
+  // Set by converters whose source carries the shop's own category names
+  // rather than a foreign system's internal ones.
+  const srcOwnsCategories=!!(jobsData&&jobsData._ownCategories);
   const bindable=new Set(); // "name|cents" pairs the account can actually price
   const routeTo=new Map(); // "name|cents" -> the product that carries that amount
 
@@ -5994,7 +6000,12 @@ async function importJobsRun(key){
         // in the Imported category — the whole point of the history is that the
         // shop can see what was quoted and completed for each customer, and a
         // generic bucket entry destroys exactly that.
-        prodCategory[pname]='Imported';
+        // Unless the export carried the shop's OWN category structure, which
+        // some do: Fieldd writes "Essential Detail Package \u2022 Coupe \u2022 Detailing
+        // Packages", and "Detailing Packages" is this shop's own word for it,
+        // not a foreign system's. Flattening that to Imported throws away the
+        // one piece of organisation the export came with.
+        if(!(srcOwnsCategories&&prodCategory[pname]&&prodCategory[pname]!=='Imported')) prodCategory[pname]='Imported';
         for(const c of set) routeTo.set(pname+'|'+c,pname);
         moved++;
         continue;
@@ -6228,12 +6239,14 @@ async function importJobsRun(key){
     // do not - never the word Imported.
     const wanted=centsList.map(c=>({sku:'imp'+c,label:(labels&&labels.get(c))||('$'+(c/100).toFixed(2)),value:c}));
     // The source system's category names ("Exterior Service Add-On", "Full
-    // Package") are not this shop's vocabulary, and minting them scatters
-    // imported history across categories nobody created. Use the source
-    // category only when the account already has one by that name; otherwise
-    // everything lands in a single Imported category.
+    // Package") are usually not this shop's vocabulary, and minting them
+    // scatters imported history across categories nobody created. Use the
+    // source category when the account already has one by that name \u2014 or when
+    // the converter vouches that the export carries the shop's own structure,
+    // as Fieldd's breadcrumb does. Everything else lands in Imported.
     const srcCat=prodCategory[name]||'';
-    const category=(srcCat&&existingCats.has(srcCat.toLowerCase()))?srcCat:'Imported';
+    const category=(srcCat&&srcCat!=='Imported'&&(existingCats.has(srcCat.toLowerCase())||srcOwnsCategories))
+      ?srcCat:'Imported';
     if(prodMap[name]&&exProdSkus[name]){
       const have=valueMap(name);
       const missing=wanted.filter(w=>!exProdSkus[name].has(w.sku)&&!have.has(w.value));
