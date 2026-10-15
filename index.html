@@ -3186,6 +3186,257 @@ function convertAgendaJobs(data){
   return jobs;
 }
 
+// ─── Fieldd jobs export ─────────────────────────────────────────────────────
+// A mobile detailing shop's job history. One row per job; the line items live
+// in a single multi-line cell under SERVICES: and ADD ONS: headings, each line
+// written "Name - $Amount". The name itself is a breadcrumb separated by
+// bullets: "Essential Detail Package • Coupe • Detailing Packages" is service,
+// vehicle class, category — so this export carries the shop's real categories
+// and sizes, and the catalog can be built properly rather than everything
+// landing in one bucket.
+//
+// The money is fully determined and worth stating, because the columns do not
+// mean what their names suggest: Price INCLUDES tax, and Grand Total is Price
+// plus the tip. Profit + Cost + Tax = Price holds on every row, and
+// Price + Tip = Grand Total holds on every row. The line items sum to
+// Price - Tax on 79 of 92 — the other 13 are jobs the shop repriced at the job
+// level without editing the lines, which is exactly what Urable allows, so the
+// difference is carried as an adjustment rather than silently dropped.
+
+const FD_LINE=/^(.*?)\s*-\s*\$\s*([\d,]+(?:\.\d{1,2})?)\s*$/;
+const FD_SECTION=/^(services|add\s*-?\s*ons?)\s*:?\s*$/i;
+// The vehicle classes this shop books by. Used both to read the middle of a
+// two-part breadcrumb and to pull a class back out of a name it was typed into.
+const FD_CLASS=/\b(sedans?|coupes?|trucks?|vans?|minivans?|motorcycles?|hatchbacks?|wagons?|suv\s*\d\s*-?\s*seat|\d\s*-?\s*seat\s*suv|suvs?|compact|mid\s*-?size|full\s*-?size)\b/i;
+
+function fdMoney(v){
+  const s=cl(v).replace(/[$,]/g,'').trim();
+  if(!s) return 0;
+  const n=parseFloat(s);
+  return isFinite(n)?Math.round(n*100):0;
+}
+// "Tue 7/21/26 10:30am" — the weekday is decoration and the bare "am" defeats
+// Date.parse, so take it apart rather than hoping.
+function fdWhen(v){
+  const s=cl(v).replace(/^[A-Za-z]{3,9}\s+/,'').trim();
+  if(!s) return null;
+  const m=/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm))?/i.exec(s);
+  if(!m) return parseJobDate(s);
+  let [,mo,d,y,hh,mm,ap]=m;
+  y=parseInt(y,10); if(y<100) y+=2000;
+  let h=hh?parseInt(hh,10):0;
+  const mi=mm?parseInt(mm,10):0;
+  if(ap){ const pm=/pm/i.test(ap); if(pm&&h<12) h+=12; if(!pm&&h===12) h=0; }
+  const t=new Date(y,parseInt(mo,10)-1,parseInt(d,10),h,mi).getTime();
+  return isNaN(t)?null:t;
+}
+// "10:30am - 12:00pm (1.50hr) (EDT)" → 90 minutes. "9:00am (EDT)" → nothing.
+function fdDuration(v){
+  const m=/\(([\d.]+)\s*hr\)/i.exec(cl(v));
+  if(m){ const h=parseFloat(m[1]); if(isFinite(h)&&h>0) return Math.round(h*60); }
+  return 0;
+}
+// Fieldd writes tags as a quoted string inside a quoted cell, so they arrive
+// wrapped in their own quote marks.
+function fdTags(v){
+  const s=cl(v).replace(/^"+|"+$/g,'').trim();
+  return s?s.split(/\s*,\s*/).filter(Boolean):[];
+}
+
+// SERVICES / ADD ONS out of the one cell, each with its breadcrumb taken apart.
+function fdParseLines(cell){
+  const out=[]; let addon=false;
+  for(const raw of cl(cell).split('\n')){
+    const ln=raw.trim(); if(!ln) continue;
+    const sec=FD_SECTION.exec(ln);
+    if(sec){ addon=/add/i.test(sec[1]); continue; }
+    const m=FD_LINE.exec(ln); if(!m) continue;
+    const segs=m[1].split('•').map(s=>cl(s)).filter(Boolean);
+    const head=segs[0]||'';
+    let size='', cat='';
+    if(segs.length>=3){ size=segs[1]; cat=segs[2]; }
+    else if(segs.length===2){ if(FD_CLASS.test(segs[1])) size=segs[1]; else cat=segs[1]; }
+    out.push({name:head, size:size, cat:cat, cents:fdMoney(m[2]), addon:addon});
+  }
+  return out;
+}
+
+// The shop types the class into the service name as well: "Executive Monthly
+// Maintenance Detail Membership Truck Monthly Maintenance Detail Monthly" is
+// the plain membership, for a truck, said three times. Where a shorter name
+// the shop also uses is a prefix of this one AND what follows names a vehicle
+// class, take the short name and lift the class out as the size. Requiring the
+// class is what keeps "Essential Detail Package (Best Value)" from being
+// flattened onto "Essential Detail Package", which is a different price.
+function fdCanonHeads(all){
+  const heads=[...new Set(all)].sort((a,b)=>a.length-b.length);
+  const map={};
+  for(const h of heads){
+    for(const s of heads){
+      if(s.length>=h.length) break;
+      if(h.toLowerCase().startsWith(s.toLowerCase()+' ')){
+        const rest=h.slice(s.length).trim();
+        const c=FD_CLASS.exec(rest);
+        if(c){ map[h]={name:s,size:cl(c[0])}; break; }
+      }
+    }
+    if(!map[h]){
+      // No shorter name to fall back on, but the class may still be in there.
+      const c=FD_CLASS.exec(h);
+      if(c&&/monthly|membership|weekly/i.test(h)) map[h]={name:h,size:cl(c[0])};
+    }
+  }
+  return map;
+}
+
+// "SUV 5-Seat", "Suv 5-Seat", "SUV 7-Seat" and "7-Seat SUV" are two classes
+// written four ways. The size becomes a price-point label in Urable, so left
+// alone the shop gets "SUV 5-Seat" and "Suv 5-Seat" as separate labels on the
+// same service. Match on the words regardless of case or order, then use the
+// spelling this shop used most.
+function fdSizeKey(s){
+  return cl(s).toLowerCase().replace(/[^a-z0-9]+/g,' ').trim().split(/\s+/).sort().join(' ');
+}
+function fdCanonSizes(all){
+  const byKey={};
+  for(const s of all){ const k=fdSizeKey(s); if(!k) continue; (byKey[k]=byKey[k]||{})[s]=(byKey[k][s]||0)+1; }
+  const map={};
+  for(const k of Object.keys(byKey)){
+    const sp=Object.keys(byKey[k]);
+    let best=sp[0];
+    for(const x of sp) if(byKey[k][x]>byKey[k][best]) best=x;
+    for(const x of sp) map[x]=best;
+  }
+  return map;
+}
+
+const FD_STATUS={'paid-card':'completed','paid-cash':'completed','paid-bank':'completed',
+  'paid':'completed','no charge':'completed','inv-card':'completed','inv-cash':'completed',
+  'inv-bank':'completed','inv-void':'canceled','cancelled':'canceled','canceled':'canceled',
+  'accepted':'scheduled','pending':'scheduled','new booking':'scheduled'};
+
+function convertFielddJobs(data){
+  const st={noCustomer:0,noDate:0,collapsedAddons:0,repriced:0,repricedCents:0,
+    taxCents:0,tipCents:0,sizedLines:0,categorised:0,zeroLines:0,canonicalised:0,
+    cancelled:0,unpaid:0,doubledNames:0};
+  // Every head in the file, so the canonical-prefix pass can see them all.
+  const heads=[], rawSizes=[];
+  for(const r of data) for(const li of fdParseLines(r['Line Items'])){
+    heads.push(li.name);
+    if(li.size) rawSizes.push(li.size);
+  }
+  const canon=fdCanonHeads(heads);
+  // The class lifted out of a service name counts too, so "7-Seat SUV" from a
+  // membership name meets "SUV 7-Seat" from a breadcrumb.
+  for(const h of Object.keys(canon)) if(canon[h].size) rawSizes.push(canon[h].size);
+  const canonSize=fdCanonSizes(rawSizes);
+  let sizeFolded=0;
+
+  const jobs=[];
+  for(const r of data){
+    let name=cl(r['Customer']);
+    if(!name){ st.noCustomer++; continue; }
+    // "Justin Justin", "Alexa Alexa" — the booking form's first name echoed
+    // into the last. One name is what they gave.
+    const np2=name.split(/\s+/);
+    if(np2.length===2&&np2[0].toLowerCase()===np2[1].toLowerCase()){ name=np2[0]; st.doubledNames++; }
+
+    const parsed=fdParseLines(r['Line Items']);
+    // A service booked at $0 with the real charge sitting in ADD ONS under the
+    // same name is one line, not two.
+    const svcZero=parsed.filter(x=>!x.addon&&x.cents===0);
+    const used=new Set();
+    for(const z of svcZero){
+      const hit=parsed.find(x=>x.addon&&!used.has(x)&&x.cents>0&&x.name.toLowerCase()===z.name.toLowerCase());
+      if(hit){ z.cents=hit.cents; z.size=z.size||hit.size; z.cat=z.cat||hit.cat; used.add(hit); st.collapsedAddons++; }
+    }
+    const lines=parsed.filter(x=>!used.has(x));
+
+    const names=[],cents=[],sizes=[],cats=[];
+    for(const li of lines){
+      const c=canon[li.name];
+      let nm=li.name, sz=li.size;
+      if(c){ if(c.name!==nm){ nm=c.name; st.canonicalised++; } sz=sz||c.size; }
+      if(sz&&canonSize[sz]&&canonSize[sz]!==sz){ sz=canonSize[sz]; sizeFolded++; }
+      names.push(nm||'Imported service');
+      cents.push(li.cents);
+      sizes.push(sz||'');
+      cats.push(li.cat||'Imported');
+      if(sz) st.sizedLines++;
+      if(li.cat) st.categorised++;
+      if(li.cents===0) st.zeroLines++;
+    }
+    if(!names.length){ names.push('Imported service'); cents.push(0); sizes.push(''); cats.push('Imported'); }
+
+    const price=fdMoney(r['Price']);        // includes tax
+    const taxC=fdMoney(r['Tax']);
+    const tipC=fdMoney(r['Tip']);
+    const grand=fdMoney(r['Grand Total']);  // price + tip
+    const subtotal=cents.reduce((a,b)=>a+b,0);
+    // What the shop actually charged before tax, against what the lines say.
+    const preTax=price-taxC;
+    const delta=preTax-subtotal;
+
+    const adjustments=[];
+    if(delta!==0){
+      st.repriced++; st.repricedCents+=Math.abs(delta);
+      adjustments.push(delta<0
+        ? {type:'discount',name:'Fieldd job price adjustment',cents:-delta}
+        : {type:'fee',name:'Fieldd job price adjustment',cents:delta});
+    }
+    if(taxC>0){ adjustments.push({type:'fee',name:'Sales tax',cents:taxC}); st.taxCents+=taxC; }
+    if(tipC>0){ adjustments.push({type:'fee',name:'Tip',cents:tipC}); st.tipCents+=tipC; }
+
+    const rawStatus=cl(r['Status']);
+    const status=FD_STATUS[rawStatus.toLowerCase()]||(rawStatus?'completed':'scheduled');
+    if(status==='canceled') st.cancelled++;
+    const paidNow=/^paid-/i.test(rawStatus);
+    if(!paidNow&&status!=='canceled') st.unpaid++;
+
+    const start=fdWhen(r['Date & Time']);
+    if(!start) st.noDate++;
+    const mins=fdDuration(r['Scheduled Duration']);
+    const [a1,city,state,zip]=splitLooseAddress(r['Location']);
+
+    const npz=[];
+    if(cl(r['Job #'])) npz.push('Fieldd '+cl(r['Job #']));
+    if(rawStatus) npz.push('Fieldd status: '+rawStatus);
+    if(delta!==0) npz.push('Lines total '+fmtPrice(subtotal/100)+' but the job was charged '+fmtPrice(preTax/100)+' before tax');
+    for(const t of fdTags(r['Tags'])) npz.push('Tag: '+t);
+    if(cl(r['Worker'])) npz.push('Worker: '+cl(r['Worker']));
+    if(cl(r['Rating'])) npz.push('Rating: '+cl(r['Rating']));
+    const miles=cl(r['Miles Traveled']);
+    if(miles&&parseFloat(miles)>0) npz.push('Travelled '+miles+' miles');
+    if(cl(r['Scheduled Duration'])&&!/^TBA/i.test(cl(r['Scheduled Duration']))) npz.push('Booked '+cl(r['Scheduled Duration']).replace(/\s+/g,' ').trim());
+
+    jobs.push({
+      num:'', srcRef:cl(r['Job #'])||'', status:status,
+      // Fieldd is a mobile book: every job carries the customer's address and
+      // the travel time to it, so the work happened there, not at a shop.
+      type:a1?'field':'shop',
+      title:names[0]||'',
+      customer:{ name:name, email:'', phone:usPhone(r['Phone']),
+        a1:a1,a2:'',city:city,state:state,zip:zip,country:countryFor(state,zip,'') },
+      // Fieldd records no vehicle anywhere in this export.
+      vehicles:[], vins:[], plates:[],
+      itemType:'automotive',
+      completedAt:(status==='completed')?start:null,
+      updatedAt:start,
+      lineItems:names, lineCents:cents, lineCats:cats, lineSizes:sizes,
+      subtotal:subtotal,
+      perLineCents:names.length?Math.floor(subtotal/names.length):subtotal,
+      firstLineCents:names.length?subtotal-Math.floor(subtotal/names.length)*(names.length-1):subtotal,
+      adjustments:adjustments,
+      start:start,end:(start&&mins)?(start+mins*60000):start,dropOff:start,allDay:false,
+      taxed:false, notes:npz.join(' | ').slice(0,1900),
+      total:grand, paid:paidNow?grand:0
+    });
+  }
+  st.sizeSpellingsFolded=sizeFolded;
+  jobs._fieldd=st;
+  return jobs;
+}
+
 // ─── OrbisX ─────────────────────────────────────────────────────────────────
 // A multi-site shop ran five locations on OrbisX and exported four files per
 // location: Clients, Calendar Events, Invoices, Payments. The headers are
@@ -3890,6 +4141,9 @@ function processRaw(raw, filename){
     const isDB=hl.includes('job_status')&&hl.includes('pay_status')&&hl.includes('charged');
     // Detail Bookie BackOffice ticket scrape: one row per invoice line item
     const isTicket=hl.includes('job_id')&&hl.includes('line_no')&&hl.includes('service_name')&&hl.includes('price');
+    // Fieldd jobs export: its own travel columns and the one-cell line items.
+    const isFieldd=hl.includes('line items')&&hl.includes('grand total')&&
+      (hl.includes('mins traveled')||hl.includes('miles traveled')||(hl.includes('margin')&&hl.includes('worker')));
     // One OrbisX file on its own still works, with less in it: invoices alone
     // have no appointment times, the calendar alone has no line-item prices.
     const ok=orbKind(headerRow);
@@ -3905,14 +4159,14 @@ function processRaw(raw, filename){
       showError('That is the OrbisX payments file. It holds no services, so it cannot make jobs \u2014 drop it together with the invoices and calendar files.');
       return;
     }
-    if(!isUrable&&!isDB&&!isTicket&&!isHCP&&!isAgenda){
+    if(!isUrable&&!isDB&&!isTicket&&!isHCP&&!isAgenda&&!isFieldd){
       // The recurring-series half of an agenda export has the same detail
       // column but no times, so say what it is rather than calling it unknown.
       if(hl.includes('detalle_original')&&hl.includes('proxima_cita_pr')){
         showError('That is the recurring-series file on its own. It has no appointment times, so it cannot make jobs \u2014 drop it together with the appointments file (Agenda_Square_..._citas).');
         return;
       }
-      showError('This does not look like a supported jobs export. Supported: Urable jobs export, Housecall Pro jobs export, Google Calendar + Square agenda (appointments + series together), Detail Bookie all-jobs export, Detail Bookie ticket scrape, OrbisX (invoices + calendar events + payments). Send the file to Josh to get the format added.');
+      showError('This does not look like a supported jobs export. Supported: Urable jobs export, Housecall Pro jobs export, Google Calendar + Square agenda (appointments + series together), Detail Bookie all-jobs export, Detail Bookie ticket scrape, OrbisX (invoices + calendar events + payments), Fieldd jobs export. Send the file to Josh to get the format added.');
       return;
     }
     rawObjRows=raw.slice(1).map(r=>{let o={};headerRow.forEach((h,i)=>{o[cl(h)]=r[i]||'';});return o;})
@@ -3921,14 +4175,36 @@ function processRaw(raw, filename){
       showError('This jobs export has no Line Items / amount columns, so jobs can\'t be recreated from it. You can still drop it in the customers box to extract the customer list.');
       return;
     }
-    jobsData=isAgenda?convertAgendaJobs(rawObjRows):(isHCP?convertHCPJobs(rawObjRows):(isTicket?convertDBTickets(rawObjRows):(isDB?convertDetailBookieJobs(rawObjRows):parseJobsExport(rawObjRows))));
+    jobsData=isFieldd?convertFielddJobs(rawObjRows):(isAgenda?convertAgendaJobs(rawObjRows):(isHCP?convertHCPJobs(rawObjRows):(isTicket?convertDBTickets(rawObjRows):(isDB?convertDetailBookieJobs(rawObjRows):parseJobsExport(rawObjRows)))));
     if(!jobsData.length){ showError('No jobs found in this file.'); return; }
     currentKind='jobs';
     convertedRows=jobsPreviewRows(jobsData);
-    sourcePlatformName=isAgenda?'Google Calendar + Square agenda':(isHCP?'Housecall Pro jobs':(isTicket?'Detail Bookie ticket scrape':(isDB?'Detail Bookie jobs':'Jobs export')));
+    sourcePlatformName=isFieldd?'Fieldd jobs':(isAgenda?'Google Calendar + Square agenda':(isHCP?'Housecall Pro jobs':(isTicket?'Detail Bookie ticket scrape':(isDB?'Detail Bookie jobs':'Jobs export'))));
     document.getElementById('originName').textContent=sourcePlatformName;
     const paidCents=jobsData.reduce((s,j)=>s+j.paid,0);
     showDetected(sourcePlatformName, jobsData.length, 0);
+    const fd=jobsData._fieldd;
+    if(fd){
+      const L=n=>n.toLocaleString();
+      const bits=[L(jobsData.length)+' jobs'];
+      bits.push(L(fd.categorised)+' lines carry the shop\u2019s own category');
+      if(fd.sizedLines) bits.push(L(fd.sizedLines)+' carry a vehicle class'+
+        (fd.sizeSpellingsFolded?(' ('+L(fd.sizeSpellingsFolded)+' spelled a class differently and were folded together)'):''));
+      if(fd.canonicalised) bits.push(L(fd.canonicalised)+' service names had the vehicle class folded out of them');
+      if(fd.collapsedAddons) bits.push(L(fd.collapsedAddons)+' $0 services merged with the add-on holding their price');
+      if(fd.repriced) bits.push(L(fd.repriced)+' jobs were repriced at the job level ('+fmtPrice(fd.repricedCents/100)+' carried as adjustments)');
+      if(fd.taxCents) bits.push(fmtPrice(fd.taxCents/100)+' tax');
+      if(fd.tipCents) bits.push(fmtPrice(fd.tipCents/100)+' tips');
+      if(fd.cancelled) bits.push(L(fd.cancelled)+' cancelled');
+      if(fd.doubledNames) bits.push(L(fd.doubledNames)+' doubled customer names collapsed');
+      bits.push('no vehicles in this export \u2014 each customer gets one placeholder to rename');
+      if(fd.noCustomer) bits.push(L(fd.noCustomer)+' with no customer, left out');
+      document.getElementById('detStats').textContent=bits.join(' \u00b7 ');
+      showPreview(convertedRows);
+      setImportModeUI();
+      setMode('api');
+      return;
+    }
     const ag=jobsData._agenda;
     document.getElementById('detStats').textContent=ag
       ? (jobsData.length.toLocaleString()+' scheduled jobs \u00b7 '+ag.d90.toLocaleString()+
