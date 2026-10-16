@@ -1418,6 +1418,54 @@ function processMixedCustomerFiles(parts){
 // them. The series file is where the repeat rule lives and it names only the
 // customers who have one, so neither file is complete on its own. Take both in
 // the jobs box and the single drop builds everything.
+// Fieldd: the jobs export, with its invoices and quotes alongside if they came.
+function processFielddBundle(fdJobs, fdInv, fdQuo, ignored){
+  let jd=[], invSt=null, quoSt=null;
+  try{
+    if(fdJobs) jd=convertFielddJobs(fdJobs.sh.objRows);
+    if(fdJobs&&fdInv.length){
+      const rows=[].concat(...fdInv.map(x=>x.sh.objRows));
+      invSt=fdApplyInvoices(jd,rows);
+    }
+    if(fdQuo.length){
+      const rows=[].concat(...fdQuo.map(x=>x.sh.objRows));
+      const q=convertFielddQuotes(rows);
+      quoSt=q._fieldd;
+      const base=jd._fieldd, own=jd._ownCategories;
+      jd=jd.concat(q);
+      jd._fieldd=base||q._fieldd; jd._ownCategories=own||q._ownCategories;
+    }
+  }catch(err){ showError('Conversion error: '+err.message); return; }
+  if(!jd.length){ showError('No jobs could be made from those Fieldd files.'); return; }
+  expectedKind='jobs'; currentKind='jobs';
+  jobsData=jd;
+  convertedRows=jobsPreviewRows(jd);
+  currentFilename=[fdJobs&&fdJobs.p.name].concat(fdInv.map(x=>x.p.name),fdQuo.map(x=>x.p.name)).filter(Boolean).join(' + ');
+  sourcePlatformName='Fieldd'+(fdQuo.length&&!fdJobs?' quotes':' jobs');
+  document.getElementById('originName').textContent=sourcePlatformName;
+  showDetected(sourcePlatformName, jd.length, 0);
+  const L=n=>n.toLocaleString();
+  const fd=jd._fieldd||{};
+  const bits=[L(jd.length)+' jobs'];
+  if(fd.categorised) bits.push(L(fd.categorised)+' lines carry the shop\u2019s own category');
+  if(fd.sizedLines) bits.push(L(fd.sizedLines)+' carry a vehicle class');
+  if(fd.repriced) bits.push(L(fd.repriced)+' repriced at the job level ('+fmtPrice(fd.repricedCents/100)+' as adjustments)');
+  if(fd.taxCents) bits.push(fmtPrice(fd.taxCents/100)+' tax');
+  if(fd.tipCents) bits.push(fmtPrice(fd.tipCents/100)+' tips');
+  if(invSt){
+    bits.push(L(invSt.matched)+' matched to the invoices export');
+    if(invSt.markedPaid) bits.push(L(invSt.markedPaid)+' of them marked paid ('+fmtPrice(invSt.paidCents/100)+') that the jobs export still showed as unpaid');
+    if(invSt.unmatched) bits.push(L(invSt.unmatched)+' invoices had no matching job');
+  }
+  if(quoSt) bits.push(L(quoSt.quotes)+' quotes'+(quoSt.booked?(' ('+L(quoSt.booked)+' already booked)'):'')+' brought in as quote jobs');
+  bits.push('no vehicles in these exports \u2014 each customer gets one placeholder to rename');
+  if(ignored&&ignored.length) bits.push('NOT read: '+ignored.join(', '));
+  document.getElementById('detStats').textContent=bits.join(' \u00b7 ');
+  showPreview(convertedRows);
+  setImportModeUI();
+  setMode('api');
+}
+
 // An OrbisX drop: any number of locations, each with up to four files. The
 // invoices and the calendar both make jobs and the payments say what was
 // collected, so they are converted together rather than one file at a time.
@@ -1479,6 +1527,24 @@ function processJobsBundle(parts){
       (orbClients.length===1?'':'s')+', which belong'+(orbClients.length===1?'s':'')+
       ' in the customers box. Run '+(orbClients.length===1?'it':'them')+' there FIRST so these jobs attach to the full records instead of the thin ones built from the invoices.');
     return processOrbisJobs(orb,orbNames,skip);
+  }
+  // A Fieldd set: the jobs export, and optionally its invoices and quotes.
+  {
+    let fdJobs=null; const fdInv=[], fdQuo=[], fdRest=[];
+    for(const p of parts){
+      const sh=shapeRaw(p.raw);
+      const k=fdInvKind(sh.headerRow);
+      if(k==='invoices'){ fdInv.push({p,sh}); continue; }
+      if(k==='quotes'){ fdQuo.push({p,sh}); continue; }
+      const hl=sh.headerRow.map(x=>cl(x).toLowerCase());
+      const isFd=hl.includes('line items')&&hl.includes('grand total')&&
+        (hl.includes('mins traveled')||hl.includes('miles traveled')||(hl.includes('margin')&&hl.includes('worker')));
+      if(isFd&&!fdJobs){ fdJobs={p,sh}; continue; }
+      fdRest.push(p);
+    }
+    if(fdJobs||fdInv.length||fdQuo.length){
+      return processFielddBundle(fdJobs,fdInv,fdQuo,fdRest.map(x=>x.name));
+    }
   }
   if(orbClients.length){
     showError('Those are OrbisX client lists ('+orbClients.join(', ')+'). They make customers, not jobs \u2014 drop them in the customers box. The jobs box wants the invoices, calendar events and payments files.');
@@ -3207,7 +3273,7 @@ const FD_LINE=/^(.*?)\s*-\s*\$\s*([\d,]+(?:\.\d{1,2})?)\s*$/;
 const FD_SECTION=/^(services|add\s*-?\s*ons?)\s*:?\s*$/i;
 // The vehicle classes this shop books by. Used both to read the middle of a
 // two-part breadcrumb and to pull a class back out of a name it was typed into.
-const FD_CLASS=/\b(sedans?|coupes?|trucks?|vans?|minivans?|motorcycles?|hatchbacks?|wagons?|suv\s*\d\s*-?\s*seat|\d\s*-?\s*seat\s*suv|suvs?|compact|mid\s*-?size|full\s*-?size)\b/i;
+const FD_CLASS=/^(standard|large|x-?large|xl|xxl|small|medium|regular)$|\b(sedans?|coupes?|trucks?|vans?|minivans?|motorcycles?|hatchbacks?|wagons?|suv\s*\d\s*-?\s*seat|\d\s*-?\s*seat\s*suv|suvs?|compact|mid\s*-?size|full\s*-?size|2\s*row|3\s*row)\b/i;
 
 function fdMoney(v){
   const s=cl(v).replace(/[$,]/g,'').trim();
@@ -3253,9 +3319,18 @@ function fdParseLines(cell){
     const m=FD_LINE.exec(ln); if(!m) continue;
     const segs=m[1].split('•').map(s=>cl(s)).filter(Boolean);
     const head=segs[0]||'';
+    // Which segment is the vehicle class and which is the category is NOT
+    // fixed: one Fieldd account writes "Essential Detail Package • Coupe •
+    // Detailing Packages" and another writes "Level 1 - Classic • Interior +
+    // Exterior Packages • Large" — the same two fields in the opposite order.
+    // Read them by what they say instead. Reading by position put "Interior +
+    // Exterior Packages" in as a vehicle class on 395 of one shop's lines.
+    // A bare "hidden" is Fieldd's marker for a service kept off the booking
+    // page, not a category anyone named, so it is dropped. ("Hidden Services",
+    // which a different shop really does use as a category, is left alone.)
+    const rest=segs.slice(1).filter(x=>x.toLowerCase()!=='hidden');
     let size='', cat='';
-    if(segs.length>=3){ size=segs[1]; cat=segs[2]; }
-    else if(segs.length===2){ if(FD_CLASS.test(segs[1])) size=segs[1]; else cat=segs[1]; }
+    for(const r of rest){ if(!size&&FD_CLASS.test(r)) size=r; else if(!cat) cat=r; }
     out.push({name:head, size:size, cat:cat, cents:fdMoney(m[2]), addon:addon});
   }
   return out;
@@ -3311,9 +3386,17 @@ function fdCanonSizes(all){
 }
 
 const FD_STATUS={'paid-card':'completed','paid-cash':'completed','paid-bank':'completed',
-  'paid':'completed','no charge':'completed','inv-card':'completed','inv-cash':'completed',
-  'inv-bank':'completed','inv-void':'canceled','cancelled':'canceled','canceled':'canceled',
-  'accepted':'scheduled','pending':'scheduled','new booking':'scheduled'};
+  'paid':'completed','paid-other':'completed','ext-pay':'completed','no charge':'completed',
+  'inv-card':'completed','inv-cash':'completed','inv-bank':'completed','invoiced':'completed',
+  'inv-void':'canceled','cancelled':'canceled','canceled':'canceled','void':'canceled',
+  'accepted':'scheduled','pending':'scheduled','new booking':'scheduled','confirmed':'scheduled',
+  // Work started but not finished. Urable has a status for this; without it
+  // these land as completed and the shop loses the jobs still on the floor.
+  'in progress':'in progress','started':'in progress','after photos':'in progress'};
+// Paid at the time of the job, by any tender. "Ext-Pay" is settled outside
+// Fieldd, which is still money in \u2014 it just did not come through their card
+// reader, and calling it unpaid understates the shop's history.
+const FD_PAID=/^(paid-|ext-pay$|paid$|no charge$)/i;
 
 function convertFielddJobs(data){
   const st={noCustomer:0,noDate:0,collapsedAddons:0,repriced:0,repricedCents:0,
@@ -3390,7 +3473,7 @@ function convertFielddJobs(data){
     const rawStatus=cl(r['Status']);
     const status=FD_STATUS[rawStatus.toLowerCase()]||(rawStatus?'completed':'scheduled');
     if(status==='canceled') st.cancelled++;
-    const paidNow=/^paid-/i.test(rawStatus);
+    const paidNow=FD_PAID.test(rawStatus);
     if(!paidNow&&status!=='canceled') st.unpaid++;
 
     const start=fdWhen(r['Date & Time']);
@@ -3436,6 +3519,160 @@ function convertFielddJobs(data){
   jobs._fieldd=st;
   // Fieldd's breadcrumb carries the shop's own category names, so the import
   // should build those categories rather than tipping everything into Imported.
+  jobs._ownCategories=true;
+  return jobs;
+}
+
+// Fieldd also exports invoices and quotes, and they are not more jobs.
+//
+// The invoices export is numbered in the SAME JOB### space as the jobs export
+// and every row in one shop's 76 was already among its 520 jobs. What it adds
+// is the payment date: 68 of those 76 were paid, and the jobs export still
+// shows them as Inv-Card. Read as a jobs source it would double the history;
+// read as enrichment it is the only place the shop's real payment dates live.
+//
+// The quotes export is its own QUOTE### space, and most of its customers never
+// booked - 150 of 174 in that same shop. Those become quote-status jobs so the
+// shop keeps its open pipeline and the people attached to it.
+
+function fdInvKind(headerRow){
+  const h=(headerRow||[]).map(x=>cl(x).toLowerCase());
+  const j='|'+h.join('|')+'|';
+  if(j.includes('|inv. no.|')&&j.includes('|line items|')) return 'invoices';
+  if(j.includes('|quote #|')&&j.includes('|line items|')) return 'quotes';
+  return null;
+}
+
+// "10/9/26" - Fieldd writes these without a weekday, unlike its job dates.
+function fdShortDate(v){
+  const s=cl(v); if(!s) return null;
+  const m=/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(s);
+  if(!m) return fdWhen(s);
+  let y=parseInt(m[3],10); if(y<100) y+=2000;
+  const t=new Date(y,parseInt(m[1],10)-1,parseInt(m[2],10)).getTime();
+  return isNaN(t)?null:t;
+}
+
+// Fold the invoices export into jobs already built from the jobs export.
+function fdApplyInvoices(jobs, invRows){
+  const byNum={};
+  for(const j of jobs){ const n=cl(j.srcRef); if(n) byNum[n]=j; }
+  const st={matched:0,markedPaid:0,paidCents:0,unmatched:0,voided:0};
+  for(const r of invRows){
+    const no=cl(r['Inv. No.']); if(!no) continue;
+    const j=byNum[no];
+    if(!j){ st.unmatched++; continue; }
+    st.matched++;
+    const np=[];
+    const invd=fdShortDate(r['Invoiced']), due=fdShortDate(r['Due Date']), pd=fdShortDate(r['Invoice Paid']);
+    const fmtd=t=>t?new Date(t).toISOString().slice(0,10):'';
+    if(invd) np.push('Invoiced '+fmtd(invd));
+    if(due) np.push('Due '+fmtd(due));
+    if(cl(r['Shop'])&&!/shop:/i.test(j.notes||'')) np.push('Shop: '+cl(r['Shop']));
+    if(pd){
+      // The jobs export does not carry this. Without it the job lands in
+      // Urable as an unpaid invoice for work the customer settled weeks ago.
+      if(!j.paid){ j.paid=j.total; st.markedPaid++; st.paidCents+=j.total; }
+      np.push('Paid '+fmtd(pd)+' per the Fieldd invoice');
+      j.completedAt=j.completedAt||pd;
+    } else if(/void/i.test(cl(r['Status']))){ st.voided++; np.push('Invoice voided in Fieldd'); }
+    else np.push('Invoiced in Fieldd, no payment recorded');
+    if(np.length) j.notes=[j.notes,np.join(' | ')].filter(Boolean).join(' | ').slice(0,1900);
+  }
+  return st;
+}
+
+const FD_QUOTE_STATUS={'quote sent':'quote','quote booked':'scheduled','quote won':'quote',
+  'quote lost':'canceled','quote expired':'canceled','quote declined':'canceled'};
+
+function convertFielddQuotes(data){
+  const st={quotes:0,noCustomer:0,booked:0,sizedLines:0,categorised:0,zeroLines:0,
+    canonicalised:0,sizeSpellingsFolded:0,doubledNames:0};
+  const heads=[], rawSizes=[];
+  for(const r of data) for(const li of fdParseLines(r['Line Items'])){
+    heads.push(li.name);
+    if(li.size) rawSizes.push(li.size);
+  }
+  const canon=fdCanonHeads(heads);
+  for(const h of Object.keys(canon)) if(canon[h].size) rawSizes.push(canon[h].size);
+  const canonSize=fdCanonSizes(rawSizes);
+
+  const jobs=[];
+  for(const r of data){
+    let name=cl(r['Customer']); if(!name){ st.noCustomer++; continue; }
+    const np2=name.split(/\s+/);
+    if(np2.length===2&&np2[0].toLowerCase()===np2[1].toLowerCase()){ name=np2[0]; st.doubledNames++; }
+
+    const lines=fdParseLines(r['Line Items']);
+    const names=[],cents=[],sizes=[],cats=[];
+    for(const li of lines){
+      const c=canon[li.name];
+      let nm=li.name, sz=li.size;
+      if(c){ if(c.name!==nm){ nm=c.name; st.canonicalised++; } sz=sz||c.size; }
+      if(sz&&canonSize[sz]&&canonSize[sz]!==sz){ sz=canonSize[sz]; st.sizeSpellingsFolded++; }
+      names.push(nm||'Imported service');
+      cents.push(li.cents); sizes.push(sz||''); cats.push(li.cat||'Imported');
+      if(sz) st.sizedLines++;
+      if(li.cat) st.categorised++;
+      if(!li.cents) st.zeroLines++;
+    }
+    if(!names.length){ names.push('Imported service'); cents.push(0); sizes.push(''); cats.push('Imported'); }
+
+    const subtotal=cents.reduce((a,b)=>a+b,0);
+    // The quote's Value is what the shop actually quoted, tax included; the
+    // lines are list prices they may have discounted off. Same arrangement as
+    // the jobs export, minus a tax column to tell them apart - so the
+    // difference rides as one adjustment rather than being invented as tax.
+    const value=fdMoney(r['Value']);
+    const adjustments=[];
+    // A quote whose Value is zero while its lines are not is a draft the shop
+    // never priced. The lines are the only real number there, so they stand -
+    // but say so, because the job then disagrees with the export on purpose.
+    const zeroValue=(value===0&&subtotal>0);
+    if(value>0&&subtotal>0&&value!==subtotal){
+      const d=value-subtotal;
+      adjustments.push(d<0?{type:'discount',name:'Fieldd quote adjustment',cents:-d}
+                          :{type:'fee',name:'Fieldd quote adjustment',cents:d});
+    }
+    const total=(value>0?value:subtotal);
+
+    const rawStatus=cl(r['Status']);
+    const status=FD_QUOTE_STATUS[rawStatus.toLowerCase()]||'quote';
+    if(status==='scheduled') st.booked++;
+    const start=fdWhen(r['Quoted'])||fdShortDate(r['Quoted']);
+    const until=fdWhen(r['Valid Until'])||fdShortDate(r['Valid Until']);
+    const [a1,city,state,zip]=splitLooseAddress(r['Location']);
+
+    const npz=['Fieldd '+cl(r['Quote #'])];
+    if(rawStatus) npz.push('Fieldd status: '+rawStatus);
+    if(until) npz.push('Valid until '+new Date(until).toISOString().slice(0,10));
+    if(cl(r['Shop'])) npz.push('Shop: '+cl(r['Shop']));
+    if(value>0&&subtotal>0&&value!==subtotal)
+      npz.push('Lines total '+fmtPrice(subtotal/100)+' but the quote was for '+fmtPrice(value/100));
+    if(zeroValue) npz.push('Fieldd shows this quote at $0.00 \u2014 the line prices were used instead');
+
+    st.quotes++;
+    jobs.push({
+      num:'', srcRef:cl(r['Quote #'])||'', status:status,
+      type:a1?'field':'shop',
+      title:names[0]||'',
+      customer:{ name:name, email:'', phone:usPhone(r['Phone']),
+        a1:a1,a2:'',city:city,state:state,zip:zip,country:countryFor(state,zip,'') },
+      vehicles:[], vins:[], plates:[],
+      itemType:'automotive',
+      completedAt:null, updatedAt:start,
+      lineItems:names, lineCents:cents, lineCats:cats, lineSizes:sizes,
+      subtotal:subtotal,
+      perLineCents:names.length?Math.floor(subtotal/names.length):subtotal,
+      firstLineCents:names.length?subtotal-Math.floor(subtotal/names.length)*(names.length-1):subtotal,
+      adjustments:adjustments,
+      start:start,end:start,dropOff:start,allDay:false,
+      taxed:false, notes:npz.join(' | ').slice(0,1900),
+      total:total, paid:0
+    });
+  }
+  jobs._fieldd=st;
+  jobs._fieldqQuotes=true;
   jobs._ownCategories=true;
   return jobs;
 }
@@ -4149,6 +4386,15 @@ function processRaw(raw, filename){
       (hl.includes('mins traveled')||hl.includes('miles traveled')||(hl.includes('margin')&&hl.includes('worker')));
     // One OrbisX file on its own still works, with less in it: invoices alone
     // have no appointment times, the calendar alone has no line-item prices.
+    const fk=fdInvKind(headerRow);
+    if(fk==='quotes'){
+      const sh=shapeRaw(raw);
+      return processFielddBundle(null,[],[{p:{name:filename},sh}],[]);
+    }
+    if(fk==='invoices'){
+      showError('That is the Fieldd invoices export. Every row in it is a job that is already in the jobs export, so on its own it would only duplicate them \u2014 what it uniquely carries is the payment date. Drop it together with the jobs export and those jobs get marked paid.');
+      return;
+    }
     const ok=orbKind(headerRow);
     if(ok==='invoices'||ok==='calendar'){
       const sh=shapeRaw(raw);
