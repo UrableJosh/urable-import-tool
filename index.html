@@ -410,10 +410,21 @@ function cleanPhone(v, keepIntl){
   return first;
 }
 
+// Exports write a placeholder where there is no address rather than leaving
+// the cell empty: one Fieldd customer list carries the literal "No email" on
+// 1,033 of its 2,557 rows. Passed through, every one of those customers shares
+// an "email", and the dedupe then cross-notes each against the other thousand
+// \u2014 a note per customer naming a thousand strangers, and a junk address on
+// their record. Anything without an @ between two non-empty parts is not an
+// email, whatever the column is called.
+const EMAIL_PLACEHOLDER=/^(no|none|n\/?a|not? (an? )?(e-?mail|address)|unknown|missing|blank|null|-+|\.+)$/i;
 function cleanEmail(v){
   let e = cl(v);
   if(!e) return '';
-  return e.split(/[;,]/)[0].trim();
+  e = e.split(/[;,]/)[0].trim();
+  if(!e||EMAIL_PLACEHOLDER.test(e)) return '';
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) return '';
+  return e;
 }
 
 function parseFielddAddress(addr){
@@ -697,13 +708,38 @@ function convertFieldd(data){
     let rawPhone=cl(r['Phone']).replace(/^'+/,'').replace(/^\+?/,'');
     let digits=rawPhone.replace(/\D/g,'');
     let phone=digits.length===11&&digits[0]==='1'?digits.slice(1):digits;
-    let email=cl(r['Email']);
+    let email=cleanEmail(r['Email']);
     let added=cl(r['Added On']);
     let [a1,a2,city,state,zip,country]=parseFielddAddress(cl(r['Address']));
     let notes=added?'Customer since: '+added:'';
     out.push([first,last,'Person',a1,a2,city,state,zip,country,phone,email,notes,'']);
   }
   return dedup(out);
+}
+
+// A list already flattened to one row per person, with the whole name in one
+// cell and the whole address in another. CS builds these by hand when they
+// merge a shop's sources before an import, so the shape turns up repeatedly
+// and is worth recognising rather than sending through the manual mapper.
+function convertSimpleList(data){
+  const out=[]; let withVeh=0, withAddr=0;
+  for(const r of data){
+    const whole=cl(r['Name']||r['Customer']||r['Client']||r['Full Name']);
+    if(!whole) continue;
+    const parts=whole.trim().split(/\s+/);
+    const first=parts.shift()||'', last=parts.join(' ');
+    const addrRaw=cl(r['Address']);
+    let a1='',city='',state='',zip='';
+    if(addrRaw){ [a1,city,state,zip]=splitLooseAddress(addrRaw); withAddr++; }
+    const veh=cl(r['Vehicles']||r['Vehicle']||r['Item']||r['Items']);
+    if(veh) withVeh++;
+    out.push([first,last,'Person',a1,'',city,state,zip,
+      countryFor(state,zip,cl(r['Country'])),usPhone(r['Phone']),cleanEmail(r['Email']),
+      cl(r['Notes']).slice(0,1800),veh]);
+  }
+  const rows=dedup(out);
+  rows._simple={withVeh,withAddr};
+  return rows;
 }
 
 function convertSquare(data){
@@ -2611,6 +2647,13 @@ function detectPlatform(filename, headers, rawRows){
      &&(h.includes('cost')||h.includes('average cost per job')||h.includes('ceramic coat client'))) return 'purchased';
   // Acuity Scheduling (Squarespace) client list
   if(h.includes('days since last appointment')) return 'acuity';
+  // A hand-merged flat list: one name, one address, and a vehicles column.
+  // Guarded on there being no separate first/last name, so it cannot claim a
+  // file one of the real converters above should have had.
+  if(!h.includes('first name')&&!h.includes('last name')&&
+     (hl[0]==='name'||hl[0]==='customer'||hl[0]==='client')&&
+     (h.includes('vehicles')||h.includes('vehicle'))&&
+     (h.includes('phone')||h.includes('email'))) return 'simplelist';
   if(h.includes('customer name')&&h.includes('job #')&&h.includes('payment status')) return 'jobsexport';
   if(h.includes('address1')&&h.includes('shippingaddress1')) return 'billship';
   if(rawRows&&rawRows[2]){
@@ -4341,7 +4384,7 @@ function convertTekmetric(data){
   return rows;
 }
 
-const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template','acuity':'Acuity Scheduling','tekmetric':'Tekmetric','hcpcust':'Housecall Pro','purchased':'Bought client list','agenda':'Google Calendar + Square agenda','orbisclients':'OrbisX'};
+const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template','acuity':'Acuity Scheduling','tekmetric':'Tekmetric','hcpcust':'Housecall Pro','purchased':'Bought client list','agenda':'Google Calendar + Square agenda','orbisclients':'OrbisX','simplelist':'Merged client list'};
 
 // One dispatch table, used by the single-file path and the multi-file path
 // alike — so a converter added later can't reach one and miss the other.
@@ -4366,6 +4409,7 @@ function convertCustomerRows(platform, raw, rawObjRows){
   if(platform==='agenda') return convertAgendaSquare(rawObjRows);
   if(platform==='tekmetric') return convertTekmetric(rawObjRows);
   if(platform==='orbisclients') return convertOrbisClients(rawObjRows);
+  if(platform==='simplelist') return convertSimpleList(rawObjRows);
   if(platform==='hcpcust') return convertHCPCustomers(rawObjRows);
   if(platform==='purchased') return convertPurchasedList(rawObjRows);
   if(platform==='urable') return dedup(rawObjRows.map(r=>HEADERS.map(h=>cl(r[h]))).filter(r=>r.some(v=>v)));
