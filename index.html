@@ -1450,6 +1450,7 @@ function processFielddBundle(fdJobs, fdInv, fdQuo, ignored){
   if(fd.categorised) bits.push(L(fd.categorised)+' lines carry the shop\u2019s own category');
   if(fd.sizedLines) bits.push(L(fd.sizedLines)+' carry a vehicle class');
   if(fd.repriced) bits.push(L(fd.repriced)+' repriced at the job level ('+fmtPrice(fd.repricedCents/100)+' as adjustments)');
+  if(fd.includedLines) bits.push(L(fd.includedLines)+' \u201c(Included)\u201d package lines kept as job notes instead of catalog entries');
   if(fd.taxCents) bits.push(fmtPrice(fd.taxCents/100)+' tax');
   if(fd.tipCents) bits.push(fmtPrice(fd.tipCents/100)+' tips');
   if(invSt){
@@ -3270,6 +3271,13 @@ function convertAgendaJobs(data){
 // difference is carried as an adjustment rather than silently dropped.
 
 const FD_LINE=/^(.*?)\s*-\s*\$\s*([\d,]+(?:\.\d{1,2})?)\s*$/;
+// "3 Month Wax (Included) - $0.00" is not a service the shop sold, it is a
+// line telling the customer what their package already covers. One shop's
+// export carries 109 of them across 13 names. Left alone they become 13
+// catalog entries nobody sells and 109 lines nobody can match, which is most
+// of what the mapping screen would otherwise be asking about. A bracketed
+// "included" that still carries a price is a real charge and is kept.
+const FD_INCLUDED=/\(\s*included\s*\)\s*$/i;
 const FD_SECTION=/^(services|add\s*-?\s*ons?)\s*:?\s*$/i;
 // The vehicle classes this shop books by. Used both to read the middle of a
 // two-part breadcrumb and to pull a class back out of a name it was typed into.
@@ -3401,7 +3409,7 @@ const FD_PAID=/^(paid-|ext-pay$|paid$|no charge$)/i;
 function convertFielddJobs(data){
   const st={noCustomer:0,noDate:0,collapsedAddons:0,repriced:0,repricedCents:0,
     taxCents:0,tipCents:0,sizedLines:0,categorised:0,zeroLines:0,canonicalised:0,
-    cancelled:0,unpaid:0,doubledNames:0};
+    cancelled:0,unpaid:0,doubledNames:0,includedLines:0};
   // Every head in the file, so the canonical-prefix pass can see them all.
   const heads=[], rawSizes=[];
   for(const r of data) for(const li of fdParseLines(r['Line Items'])){
@@ -3427,6 +3435,13 @@ function convertFielddJobs(data){
     const parsed=fdParseLines(r['Line Items']);
     // A service booked at $0 with the real charge sitting in ADD ONS under the
     // same name is one line, not two.
+    // Package inclusions come out first, so they cannot be mistaken for a $0
+    // service the shop gave away (which is real, and stays).
+    const included=parsed.filter(x=>x.cents===0&&FD_INCLUDED.test(x.name));
+    if(included.length){
+      for(const x of included) parsed.splice(parsed.indexOf(x),1);
+      st.includedLines+=included.length;
+    }
     const svcZero=parsed.filter(x=>!x.addon&&x.cents===0);
     const used=new Set();
     for(const z of svcZero){
@@ -3483,6 +3498,8 @@ function convertFielddJobs(data){
 
     const npz=[];
     if(cl(r['Job #'])) npz.push('Fieldd '+cl(r['Job #']));
+    if(included.length) npz.push('Package includes: '+
+      included.map(x=>cl(x.name).replace(FD_INCLUDED,'').trim()).filter(Boolean).join(', '));
     if(rawStatus) npz.push('Fieldd status: '+rawStatus);
     if(delta!==0) npz.push('Lines total '+fmtPrice(subtotal/100)+' but the job was charged '+fmtPrice(preTax/100)+' before tax');
     for(const t of fdTags(r['Tags'])) npz.push('Tag: '+t);
@@ -3587,7 +3604,7 @@ const FD_QUOTE_STATUS={'quote sent':'quote','quote booked':'scheduled','quote wo
 
 function convertFielddQuotes(data){
   const st={quotes:0,noCustomer:0,booked:0,sizedLines:0,categorised:0,zeroLines:0,
-    canonicalised:0,sizeSpellingsFolded:0,doubledNames:0};
+    canonicalised:0,sizeSpellingsFolded:0,doubledNames:0,includedLines:0};
   const heads=[], rawSizes=[];
   for(const r of data) for(const li of fdParseLines(r['Line Items'])){
     heads.push(li.name);
@@ -3603,7 +3620,10 @@ function convertFielddQuotes(data){
     const np2=name.split(/\s+/);
     if(np2.length===2&&np2[0].toLowerCase()===np2[1].toLowerCase()){ name=np2[0]; st.doubledNames++; }
 
-    const lines=fdParseLines(r['Line Items']);
+    const parsedQ=fdParseLines(r['Line Items']);
+    const inclQ=parsedQ.filter(x=>x.cents===0&&FD_INCLUDED.test(x.name));
+    const lines=parsedQ.filter(x=>inclQ.indexOf(x)<0);
+    st.includedLines+=inclQ.length;
     const names=[],cents=[],sizes=[],cats=[];
     for(const li of lines){
       const c=canon[li.name];
@@ -3644,6 +3664,8 @@ function convertFielddQuotes(data){
     const [a1,city,state,zip]=splitLooseAddress(r['Location']);
 
     const npz=['Fieldd '+cl(r['Quote #'])];
+    if(inclQ.length) npz.push('Package includes: '+
+      inclQ.map(x=>cl(x.name).replace(FD_INCLUDED,'').trim()).filter(Boolean).join(', '));
     if(rawStatus) npz.push('Fieldd status: '+rawStatus);
     if(until) npz.push('Valid until '+new Date(until).toISOString().slice(0,10));
     if(cl(r['Shop'])) npz.push('Shop: '+cl(r['Shop']));
@@ -4441,6 +4463,7 @@ function processRaw(raw, filename){
         (fd.sizeSpellingsFolded?(' ('+L(fd.sizeSpellingsFolded)+' spelled a class differently and were folded together)'):''));
       if(fd.canonicalised) bits.push(L(fd.canonicalised)+' service names had the vehicle class folded out of them');
       if(fd.collapsedAddons) bits.push(L(fd.collapsedAddons)+' $0 services merged with the add-on holding their price');
+      if(fd.includedLines) bits.push(L(fd.includedLines)+' \u201c(Included)\u201d package lines kept as job notes instead of catalog entries');
       if(fd.repriced) bits.push(L(fd.repriced)+' jobs were repriced at the job level ('+fmtPrice(fd.repricedCents/100)+' carried as adjustments)');
       if(fd.taxCents) bits.push(fmtPrice(fd.taxCents/100)+' tax');
       if(fd.tipCents) bits.push(fmtPrice(fd.tipCents/100)+' tips');
