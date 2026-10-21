@@ -1740,7 +1740,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-10-21b dedupe+imported-only+rerun-shadow';
+const BUILD='2026-10-21c match-pool-excludes-imported';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -6392,8 +6392,21 @@ async function importJobsRun(key){
     // with the prices it actually carries. An exact-name hit is still preferred;
     // this is the fallback that catches the shop's own spelling of the same thing.
     const exStruct=[];
+    let poolSkipped=0;
     for(const p of exProds){
       const nm=String(p.name||''); if(!nm) continue;
+      // Match against the SHOP'S catalog only, never against companions a
+      // previous pass left in Imported. Including them did three things on a
+      // re-run: the idf weighting was computed over 235 candidates instead of
+      // 56 so token weights shifted, a source name could match our own
+      // companion instead of the shop's service, and the "is this a price the
+      // shop still carries" test could be satisfied by a companion's own
+      // historical amount. Four names that bound to the shop's catalog on pass
+      // one were created under Imported on pass two, one of them carrying
+      // $309/$359 - both real price points on the service it should have bound
+      // to. "Run every import twice" is standard practice, so the pool has to
+      // be the shop's catalog every time.
+      if(/^imported$/i.test(String(p.categoryName||(p.category&&p.category.name)||'').trim())){ poolSkipped++; continue; }
       const vals=new Set();
       for(const pr of (p.prices||[])){ const v=priceCents(pr.value); if(v!=null) vals.add(v); }
       const vl=[...vals].sort((a,b)=>a-b);
@@ -6405,6 +6418,7 @@ async function importJobsRun(key){
     // is not enough: "Lavado, descontaminacion y sellado" and "Lavado, pulido y
     // sellado" are different services at different prices, and a confident wrong
     // bind is worse than an entry in Imported, because nobody reviews it.
+    if(poolSkipped) logLine('Matching against '+exStruct.length+" of the shop's own services; skipped "+poolSkipped+' entry(ies) already in Imported so a previous pass cannot shadow the real catalog.',false);
     const structHits={};
     // Rare words should outweigh common ones: "aros" identifies a service,
     // "lavado" appears on half the catalog.
