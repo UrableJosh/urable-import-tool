@@ -553,7 +553,14 @@ function dedup(rows){
   // Name guard: a shared phone/email only merges records whose names match
   // (or where one name is blank). Households share home phones — "Larry" and
   // "Yvonne Sprunger" on one number are two customers, not a duplicate.
-  const normName=r=>((r[0]||'')+' '+(r[1]||'')).trim().toLowerCase().replace(/\s+/g,' ');
+  // A one-name customer arrives as "Mahmoud -" from one export and "Mahmoud"
+  // from another, so the guard saw two different names on one phone and kept
+  // both. A bare -, ., n/a, none or null is a placeholder, not a surname:
+  // dropping it merged 202 of 334 such pairs on the KBC files. The remaining
+  // 132 are real spelling differences and must still NOT merge.
+  const NAME_JUNK=/^(-+|\.+|n\/?a|none|null|unknown)$/i;
+  const normName=r=>((r[0]||'')+' '+(r[1]||'')).trim().toLowerCase().replace(/\s+/g,' ')
+    .split(' ').filter(w=>w&&!NAME_JUNK.test(w)).join(' ');
   function compatible(i,j){
     const a=normName(rows[i]), b=normName(rows[j]);
     return !a||!b||a===b;
@@ -1733,7 +1740,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-10-21 skufix+catcreate';
+const BUILD='2026-10-21b dedupe+imported-only+rerun-shadow';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -6011,7 +6018,15 @@ async function importJobsRun(key){
   const prodCatVotes={};   // product name -> {category: how many lines said so}
   // Set by converters whose source carries the shop's own category names
   // rather than a foreign system's internal ones.
-  const srcOwnsCategories=!!(jobsData&&jobsData._ownCategories);
+  // Was: a converter could vouch that the export carries the shop's own
+  // category structure (Fieldd's breadcrumb does) and we would recreate those
+  // categories. That predates the match-or-Imported decision, whose whole
+  // point is ONE bucket the CS team can delete in a single action - scattering
+  // imported history across 7 new categories defeats it. Everything unmatched
+  // now goes to Imported. The source category still rides along in the job
+  // notes and in the line's embedded service snapshot, so nothing is lost for
+  // analytics. Flip this back to read jobsData._ownCategories to restore it.
+  const srcOwnsCategories=false;
   const bindable=new Set(); // "name|cents" pairs the account can actually price
   const routeTo=new Map(); // "name|cents" -> the product that carries that amount
 
@@ -6325,19 +6340,32 @@ async function importJobsRun(key){
   const exProdSkus={}, exProdPrices={};
   const prodAlias={}; // matchKey -> the catalog's own spelling
   const existingCats=new Set(); // category names the account already uses
+  // Whether the bare-name slot is currently held by an Imported companion.
+  const bareIsImported={};
   for(const p of exProds){
     const nm=String(p.name||'');
-    if(!prodMap[nm]) prodMap[nm]=p.id;
+    const pcat0=String((p.categoryName||(p.category&&p.category.name)||'')).trim();
+    const isImp=/^imported$/i.test(pcat0);
+    // A companion we created on an earlier pass carries the SAME bare name as
+    // the shop's own service and differs only by category. First-wins indexing
+    // let that companion shadow the real service on the SECOND pass, so an
+    // amount the shop DOES carry looked missing and earned yet another
+    // companion - 47 surplus products on one KBC re-run, including a $29.00
+    // "Door Jambs" when his own Door Jambs is $29.00. Since "run every import
+    // twice" is the retry mechanism, this had to be fixed at the index.
+    const takeBare=!prodMap[nm]||(bareIsImported[nm]&&!isImp);
+    if(takeBare){
+      prodMap[nm]=p.id;
+      bareIsImported[nm]=isImp;
+      exProdSkus[nm]=new Set((p.prices||[]).map(x=>x.sku).filter(Boolean));
+      exProdPrices[nm]=p.prices||[];
+    }
     const mk=matchKey(nm);
     // suffix-insensitive lookup. Prefer the shop's own spelling over an
     // "(imported)" leftover when both collapse to the same key.
     if(mk&&(!prodAlias[mk]||(/\(\s*imported\s*\)\s*$/i.test(prodAlias[mk])&&!/\(\s*imported\s*\)\s*$/i.test(nm)))) prodAlias[mk]=nm;
     const pcat=String((p.categoryName||(p.category&&p.category.name)||'')).trim();
     if(pcat) existingCats.add(pcat.toLowerCase());
-    if(!exProdSkus[nm]){
-      exProdSkus[nm]=new Set((p.prices||[]).map(x=>x.sku).filter(Boolean));
-      exProdPrices[nm]=p.prices||[];
-    }
     // A companion entry carries the SAME name as the shop's own service and is
     // told apart only by its category. Index it that way too, so a re-run finds
     // the companion it created last time instead of the shop's live entry (and
@@ -6952,6 +6980,10 @@ async function importJobsRun(key){
       if(!itemMap[pk]){
         const r=await apiFetch('/v1/items',{method:'POST',body:JSON.stringify({customerId:custId,name:HCP_PLACEHOLDER_VEHICLE,type:'automotive',industry:selectedIndustry()})},key);
         if(r.ok&&r.body&&r.body.success){ itemMap[pk]=r.body.data.id; createdVeh++; }
+        // Swallowing this turned a transient network failure into the job
+        // reporting "no vehicle/item available", which reads like a source
+        // data problem and is not. Say what actually happened.
+        else err(jobLabel(j)+' placeholder vehicle',(r.body&&r.body.error)||('HTTP '+r.status));
       }
       if(itemMap[pk]) itemIds=[itemMap[pk]];
     }
