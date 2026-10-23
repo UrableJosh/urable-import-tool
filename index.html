@@ -1764,7 +1764,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-10-23b fieldd-new-export-headers';
+const BUILD='2026-10-23c fieldd-client-list-detect';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -2689,6 +2689,12 @@ function detectPlatform(filename, headers, rawRows){
   if(h.includes('j-id')&&h.includes('display name')) return 'jobber';
   if(h.includes('square customer id')||h.includes('creation source')) return 'square';
   if(h.includes('total billed')&&h.includes('added on')) return 'fieldd';
+  // The newer Fieldd client list (Customer/Contact/Billed/Added, renamed to
+  // Name/Added On by fdRenameHeaders above) has no "total billed", so the rule
+  // above misses it and only the filename containing "fieldd" saved it. A list
+  // renamed by the shop or by CS would not be recognised at all. These four
+  // together are distinctly Fieldd.
+  if(h.includes('contact')&&h.includes('added on')&&h.includes('billed')&&h.includes('vehicles')) return 'fieldd';
   if(h.includes('contact 1')&&h.includes('contact 2')&&h.includes('contact 5')) return 'ebms';
   if(h.includes('contact id')&&h.includes('last activity')&&h.includes('tags')) return 'ghl';
   if(h.includes('vehicle_year')&&h.includes('vehicle_make')&&h.includes('code')) return 'tintwiz';
