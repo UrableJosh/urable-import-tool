@@ -1915,7 +1915,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-10-23g jobs-worksheet';
+const BUILD='2026-10-23h crlf-and-ps-guard';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -2961,6 +2961,15 @@ function readParts(file){
         let text=new TextDecoder(forceLatin?'windows-1252':'utf-8').decode(e.target.result);
         // a replacement char means the utf-8 guess was wrong
         if(!forceLatin&&text.includes('\ufffd')) text=new TextDecoder('windows-1252').decode(e.target.result);
+        // AD Detailing's worksheet ended every line with \r\r\n - a double
+        // carriage return, which some spreadsheet exports and copy-paste
+        // round-trips produce. Papa guesses the line ending from what it
+        // counts, picked \r, and every row after the first then began with a
+        // stray \n. That made the first field UNQUOTED, so its quotes survived
+        // as characters: six customers were created called "Matt" Roberts,
+        // "Ken" Mudd, quote marks and all. Collapse any run of carriage
+        // returns, with or without a newline, into one newline first.
+        text=text.replace(/\r+\n?/g,'\n');
         resolve([{name:file.name,raw:Papa.parse(text,{header:false,skipEmptyLines:false}).data}]);
       };
       rd.readAsArrayBuffer(file);
@@ -5062,6 +5071,19 @@ function processRaw(raw, filename){
     setImportModeUI();
     setMode('api'); // jobs only make sense via API import
     return;
+  }
+  // A products/services export in the CUSTOMERS box. Its Name column makes it
+  // look like a customer list, and AD Detailing's 22-row catalog duly became
+  // 22 customers named after his service categories - "service Mobile
+  // Detailing", "service Preloaded - Film Services". Only the two shapes that
+  // cannot be anything else are refused here; the generic name+price sheet
+  // stays eligible, because plenty of real customer lists look like that.
+  if(expectedKind==='customers'){
+    const pp=detectProductPlatform(filename, headerRow);
+    if(pp==='urableprod'||pp==='urabletemplate'){
+      showError('That is a products/services file, not a customer list \u2014 drop it in the products & services box. Imported here it would create one customer per service.');
+      return;
+    }
   }
   // Files from the products drop zone check product formats first
   let platform=null;
