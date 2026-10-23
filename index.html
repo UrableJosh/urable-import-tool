@@ -1915,7 +1915,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-10-23f fieldd-vehicles-merge';
+const BUILD='2026-10-23g jobs-worksheet';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -3822,6 +3822,148 @@ function convertFielddJobs(data){
   return jobs;
 }
 
+// ─── Jobs worksheet ─────────────────────────────────────────────────────────
+// First Name | Last Name | Phone Number | Email | Vehicle | Service | Date |
+// Start Time | Duration (minutes) | Service Address | Price | Deposit Paid |
+// Balance Due | Tip | Status | Notes
+//
+// The hand-built sheet a shop (or CS) produces when there is no system to
+// export from: one row per job, one customer, one vehicle, one service. The
+// jobs-side counterpart of convertSimpleList, and it turns up as often.
+function jwKind(headerRow){
+  const h=headerRow.map(x=>cl(x).toLowerCase());
+  const has=n=>h.includes(n);
+  if(has('line items')||has('grand total')||has('job #')||has('inv. no.')||has('quote #')) return '';
+  if(!has('service')||!has('date')) return '';
+  if(!has('vehicle')&&!has('vehicles')) return '';
+  if(!has('first name')&&!has('customer')&&!has('name')) return '';
+  if(!has('price')&&!has('balance due')&&!has('total')) return '';
+  return 'worksheet';
+}
+// "03/01/2026" + "1:00 PM". Date.parse manages this pair on most engines but
+// not reliably with a bare "3:30 AM", so take it apart.
+function jwWhen(dateStr,timeStr){
+  const d=/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/.exec(cl(dateStr));
+  if(!d) return null;
+  let y=parseInt(d[3],10); if(y<100) y+=2000;
+  let hh=0,mi=0;
+  const t=/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(cl(timeStr));
+  if(t){
+    hh=parseInt(t[1],10); mi=t[2]?parseInt(t[2],10):0;
+    if(t[3]){ const pm=/pm/i.test(t[3]); if(pm&&hh<12) hh+=12; if(!pm&&hh===12) hh=0; }
+  }
+  const ts=new Date(y,parseInt(d[1],10)-1,parseInt(d[2],10),hh,mi).getTime();
+  return isNaN(ts)?null:ts;
+}
+const JW_STATUS={'paid':'completed','completed':'completed','complete':'completed',
+  'done':'completed','finished':'completed','closed':'completed',
+  'scheduled':'scheduled','booked':'scheduled','confirmed':'scheduled','pending':'scheduled',
+  'cancelled':'canceled','canceled':'canceled','no show':'canceled','no-show':'canceled',
+  'quote':'quote','estimate':'quote','in progress':'in progress'};
+const JW_PAID=/^(paid|completed|complete|done|finished|closed)$/i;
+
+function convertJobsWorksheet(data){
+  const st={rows:0,noCustomer:0,noDate:0,noService:0,
+            moneySplit:0,moneySplitCents:0,priceWon:0,
+            deposits:0,depositCents:0,tips:0,tipCents:0,negTips:0,negTipCents:0,
+            pastScheduled:0,futureScheduled:0,zeroMoney:0,cancelled:0,field:0,
+            paidCents:0,subtotalCents:0};
+  const jobs=[];
+  for(const r of data){
+    st.rows++;
+    const first=cl(r['First Name']), last=cl(r['Last Name']);
+    let name=cl(r['Customer'])||cl(r['Name'])||((first+' '+last).trim());
+    if(!name){ st.noCustomer++; continue; }
+    const svc=cl(r['Service']);
+    if(!svc){ st.noService++; continue; }
+
+    const price=moneyCents(r['Price']);
+    const dep=moneyCents(r['Deposit Paid']);
+    const bal=moneyCents(r['Balance Due']);
+    const tip=moneyCents(r['Tip']);
+    // Deposit + Balance is what the shop actually took; Price is hand-entered
+    // and drifts. On AD Detailing's 64 rows the two disagreed on 9, and the
+    // split figure landed on a catalog price almost every time while Price did
+    // not - which also lifted catalog binding from 53% to 66%. Fall back to
+    // Price only when there is no split to read.
+    let amount=dep+bal;
+    if(!amount){ amount=price; if(price) st.priceWon++; }
+    else if(price!==amount){ st.moneySplit++; st.moneySplitCents+=Math.abs(price-amount); }
+    if(!amount) st.zeroMoney++;
+    st.subtotalCents+=amount;
+
+    const start=jwWhen(r['Date'],r['Start Time']);
+    if(!start) st.noDate++;
+    const rawStatus=cl(r['Status']);
+    let status=rawStatus?(JW_STATUS[rawStatus.toLowerCase()]||'completed'):'completed';
+    // A job still marked "scheduled" whose date has passed was worked: the
+    // sheet was written after the fact and the status never caught up. Four of
+    // AD Detailing's were two months stale, each with a deposit against it.
+    let staleSched=false;
+    if(status==='scheduled'&&start&&start<=Date.now()){
+      status='completed'; staleSched=true; st.pastScheduled++;
+    } else if(status==='scheduled'){ st.futureScheduled++; }
+    if(status==='canceled') st.cancelled++;
+
+    const adjustments=[];
+    if(tip>0){ adjustments.push({type:'fee',name:'Tip',cents:tip}); st.tips++; st.tipCents+=tip; }
+    // A negative tip is a refund, and an adjustment's value is always positive
+    // with its sign carried by the type. Recording it as a discount would make
+    // the invoice disagree with what was collected, so note it and leave it.
+    else if(tip<0){ st.negTips++; st.negTipCents+=tip; }
+
+    const total=amount+(tip>0?tip:0);
+    // Work that is done is paid in full; work still ahead has only its deposit.
+    const paidInFull=(status==='completed'&&(JW_PAID.test(rawStatus)||staleSched||!rawStatus));
+    const paid=paidInFull?total:(status==='canceled'?0:dep);
+    st.paidCents+=paid;
+    if(dep>0){ st.deposits++; st.depositCents+=dep; }
+
+    const addr=cl(r['Service Address']);
+    const [a1,city,state,zip]=addr?splitLooseAddress(addr):['','','',''];
+    if(a1) st.field++;
+
+    const mins=parseInt(cl(r['Duration (minutes)'])||cl(r['Duration'])||'0',10)||0;
+    const veh=cl(r['Vehicle'])||cl(r['Vehicles']);
+
+    const npz=[];
+    if(cl(r['Notes'])) npz.push(cl(r['Notes']));
+    if(dep>0) npz.push('Deposit '+fmtPrice(dep/100)+' + balance '+fmtPrice(bal/100));
+    // Includes the rows whose Price cell is simply empty or zero while money
+    // was plainly collected - those need flagging just as much as a mismatch.
+    if((dep+bal)&&price!==(dep+bal))
+      npz.push('Sheet listed a price of '+fmtPrice(price/100)+'; imported at '+fmtPrice(amount/100)+', what was collected');
+    if(staleSched) npz.push('Sheet still said "'+rawStatus+'" but the date had passed — imported as completed and paid');
+    if(tip<0) npz.push('Sheet recorded a negative tip of '+fmtPrice(tip/100)+' — not imported, review');
+    if(!amount) npz.push('No amount on the sheet — imported at zero');
+    if(cl(r['Worker'])) npz.push('Worker: '+cl(r['Worker']));
+
+    jobs.push({
+      num:'', srcRef:'', status:status,
+      type:a1?'field':'shop',
+      title:svc,
+      customer:{ name:name, email:cleanEmail(r['Email']), phone:usPhone(r['Phone Number']||r['Phone']),
+        a1:a1,a2:'',city:city,state:state,zip:zip,country:countryFor(state,zip,'') },
+      vehicles:veh?[veh]:[], vehiclesRaw:veh, vins:[], plates:[],
+      itemType:'automotive',
+      completedAt:(status==='completed')?start:null,
+      updatedAt:start,
+      lineItems:[svc], lineCents:[amount], lineCats:[''], lineSizes:[''],
+      subtotal:amount,
+      perLineCents:amount, firstLineCents:amount,
+      adjustments:adjustments,
+      start:start,end:(start&&mins)?(start+mins*60000):start,dropOff:start,allDay:false,
+      taxed:false, notes:npz.join(' | ').slice(0,1900),
+      total:total, paid:paid
+    });
+  }
+  jobs._worksheet=st;
+  // The sheet carries no category of its own, so an unmatched service belongs
+  // in Imported rather than minting a category from a column that isn't there.
+  jobs._ownCategories=false;
+  return jobs;
+}
+
 // Fieldd also exports invoices and quotes, and they are not more jobs.
 //
 // The invoices export is numbered in the SAME JOB### space as the jobs export
@@ -4808,6 +4950,8 @@ function processRaw(raw, filename){
     // Fieldd jobs export: its own travel columns and the one-cell line items.
     const isFieldd=hl.includes('line items')&&hl.includes('grand total')&&
       (hl.includes('mins traveled')||hl.includes('miles traveled')||(hl.includes('margin')&&hl.includes('worker')));
+    // The hand-built worksheet: one row per job, named customer, one service.
+    const isWorksheet=!isFieldd&&!isUrable&&!isHCP&&!isDB&&!isTicket&&!isAgenda&&!!jwKind(headerRow);
     // One OrbisX file on its own still works, with less in it: invoices alone
     // have no appointment times, the calendar alone has no line-item prices.
     const fk=fdInvKind(headerRow);
@@ -4838,14 +4982,14 @@ function processRaw(raw, filename){
       showError('That is the Fieldd card-payments report. It holds no services, so it cannot make jobs \u2014 drop it together with the Fieldd jobs export (and the invoices and quotes if you have them). It can only say what was collected on jobs that are in the same drop.');
       return;
     }
-    if(!isUrable&&!isDB&&!isTicket&&!isHCP&&!isAgenda&&!isFieldd){
+    if(!isUrable&&!isDB&&!isTicket&&!isHCP&&!isAgenda&&!isFieldd&&!isWorksheet){
       // The recurring-series half of an agenda export has the same detail
       // column but no times, so say what it is rather than calling it unknown.
       if(hl.includes('detalle_original')&&hl.includes('proxima_cita_pr')){
         showError('That is the recurring-series file on its own. It has no appointment times, so it cannot make jobs \u2014 drop it together with the appointments file (Agenda_Square_..._citas).');
         return;
       }
-      showError('This does not look like a supported jobs export. Supported: Urable jobs export, Housecall Pro jobs export, Google Calendar + Square agenda (appointments + series together), Detail Bookie all-jobs export, Detail Bookie ticket scrape, OrbisX (invoices + calendar events + payments), Fieldd (jobs + invoices + quotes + card payments). Send the file to Josh to get the format added.');
+      showError('This does not look like a supported jobs export. Supported: Urable jobs export, Housecall Pro jobs export, Google Calendar + Square agenda (appointments + series together), Detail Bookie all-jobs export, Detail Bookie ticket scrape, OrbisX (invoices + calendar events + payments), Fieldd (jobs + invoices + quotes + card payments), and a hand-built jobs worksheet (First/Last Name, Vehicle, Service, Date, Start Time, Price or Deposit Paid + Balance Due). Send the file to Josh to get the format added.');
       return;
     }
     rawObjRows=raw.slice(1).map(r=>{let o={};headerRow.forEach((h,i)=>{o[cl(h)]=r[i]||'';});return o;})
@@ -4854,14 +4998,34 @@ function processRaw(raw, filename){
       showError('This jobs export has no Line Items / amount columns, so jobs can\'t be recreated from it. You can still drop it in the customers box to extract the customer list.');
       return;
     }
-    jobsData=isFieldd?convertFielddJobs(rawObjRows):(isAgenda?convertAgendaJobs(rawObjRows):(isHCP?convertHCPJobs(rawObjRows):(isTicket?convertDBTickets(rawObjRows):(isDB?convertDetailBookieJobs(rawObjRows):parseJobsExport(rawObjRows)))));
+    jobsData=isWorksheet?convertJobsWorksheet(rawObjRows):(isFieldd?convertFielddJobs(rawObjRows):(isAgenda?convertAgendaJobs(rawObjRows):(isHCP?convertHCPJobs(rawObjRows):(isTicket?convertDBTickets(rawObjRows):(isDB?convertDetailBookieJobs(rawObjRows):parseJobsExport(rawObjRows))))));
     if(!jobsData.length){ showError('No jobs found in this file.'); return; }
     currentKind='jobs';
     convertedRows=jobsPreviewRows(jobsData);
-    sourcePlatformName=isFieldd?'Fieldd jobs':(isAgenda?'Google Calendar + Square agenda':(isHCP?'Housecall Pro jobs':(isTicket?'Detail Bookie ticket scrape':(isDB?'Detail Bookie jobs':'Jobs export'))));
+    sourcePlatformName=isWorksheet?'Jobs worksheet':(isFieldd?'Fieldd jobs':(isAgenda?'Google Calendar + Square agenda':(isHCP?'Housecall Pro jobs':(isTicket?'Detail Bookie ticket scrape':(isDB?'Detail Bookie jobs':'Jobs export')))));
     document.getElementById('originName').textContent=sourcePlatformName;
     const paidCents=jobsData.reduce((s,j)=>s+j.paid,0);
     showDetected(sourcePlatformName, jobsData.length, 0);
+    const ws=jobsData._worksheet;
+    if(ws){
+      const L=n=>n.toLocaleString();
+      const bits=[L(jobsData.length)+' jobs from '+L(ws.rows)+' row(s)'];
+      bits.push(fmtPrice(ws.subtotalCents/100)+' of work, '+fmtPrice(ws.paidCents/100)+' recorded paid');
+      if(ws.moneySplit) bits.push(L(ws.moneySplit)+' row(s) listed a Price that disagreed with Deposit + Balance \u2014 imported at what was collected ('+fmtPrice(ws.moneySplitCents/100)+' of difference, noted on each job)');
+      if(ws.priceWon) bits.push(L(ws.priceWon)+' row(s) had no deposit/balance split, so Price was used');
+      if(ws.deposits) bits.push(L(ws.deposits)+' deposit(s) totalling '+fmtPrice(ws.depositCents/100));
+      if(ws.tips) bits.push(L(ws.tips)+' tip(s) totalling '+fmtPrice(ws.tipCents/100)+' added as job adjustments');
+      if(ws.negTips) bits.push(L(ws.negTips)+' negative tip(s) ('+fmtPrice(ws.negTipCents/100)+') NOT imported \u2014 noted on the job');
+      if(ws.pastScheduled) bits.push(L(ws.pastScheduled)+' row(s) still said scheduled but the date had passed \u2014 imported as completed and paid');
+      if(ws.futureScheduled) bits.push(L(ws.futureScheduled)+' still ahead \u2014 scheduled, deposit only');
+      if(ws.cancelled) bits.push(L(ws.cancelled)+' cancelled');
+      if(ws.zeroMoney) bits.push(L(ws.zeroMoney)+' row(s) carried no amount at all \u2014 imported at zero');
+      if(ws.field) bits.push(L(ws.field)+' have a service address (imported as mobile jobs)');
+      if(ws.noCustomer) bits.push(L(ws.noCustomer)+' row(s) had no customer name and were skipped');
+      if(ws.noService) bits.push(L(ws.noService)+' row(s) had no service and were skipped');
+      if(ws.noDate) bits.push(L(ws.noDate)+' row(s) had no readable date');
+      document.getElementById('detStats').textContent=bits.join(' \u00b7 ');
+    }
     const fd=jobsData._fieldd;
     if(fd){
       const L=n=>n.toLocaleString();
