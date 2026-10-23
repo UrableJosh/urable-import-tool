@@ -1443,8 +1443,120 @@ function convertShopmonkeyBundle(parts){
 // shop that kept half its book somewhere else. Each file is detected and
 // converted on its own, then the combined set is deduplicated, so a customer
 // who appears in two lists lands as one record with both sets of details.
+// ─── Fieldd vehicles export ─────────────────────────────────────────────────
+// Vehicle | Status | Owner | Type | Mileage | Last Service | Added | Billed.
+// One row per vehicle, the owner named rather than keyed.
+//
+// The client list carries a Vehicles column of its own, but it holds ONE value
+// per customer and jams the rest into it: 59 of KBC's 438 arrived as
+// "2021 Honda Odyssey, 2019 Ford F-150 XLT" and became a single vehicle
+// record. Eight more held a mileage reading or a bare year instead of a
+// vehicle. This file has the real names, one per row, so dropping the two
+// together is strictly better than either alone.
+function fdVehKind(headerRow){
+  const h=headerRow.map(x=>cl(x).toLowerCase());
+  const has=n=>h.includes(n);
+  return (has('vehicle')&&has('owner')&&has('mileage')&&has('last service'))?'vehicles':'';
+}
+function fdVehTidy(v){
+  return cl(v).replace(/\s+/g,' ')
+    .replace(/\bx{3,}\b/ig,' ')
+    .replace(/^[\-–—\s]+/,'').replace(/[\-–—\s]+$/,'')
+    .replace(/\s+/g,' ').trim();
+}
+// A vehicle needs a word in it. "133576" is an odometer reading and "2026" is a
+// model year; creating either as a vehicle gives the shop a record it cannot
+// read and has to delete by hand.
+function fdVehUsable(v){
+  const x=cl(v);
+  if(!x||x==='-') return false;
+  if(!/[A-Za-z]/.test(x)) return false;
+  if(/^(19|20)\d{2}$/.test(x)) return false;
+  return true;
+}
+// Fieldd lets one car be typed in more than once. "2017 Toyota Rav 4" and
+// "2017 Toyota Rav4" are the same vehicle; so are "ascent 2019 subaru" and
+// "2019 Subaru Ascent", and three spellings of one Range Rover. Collapse on the
+// squashed string (spacing), on the token set (word order) and on containment
+// once years are dropped, keeping the fullest spelling of whichever agree.
+// 35 of KBC's 509 rows collapse this way.
+function fdVehCollapse(names){
+  const sq=x=>String(x).toLowerCase().replace(/[^a-z0-9]/g,'');
+  const bare=x=>sq(x).replace(/(19|20)\d{2}/g,'');
+  const toks=x=>(String(x).toLowerCase().match(/[a-z0-9]+/g)||[]).slice().sort().join(' ');
+  const keep=[];
+  for(const nm of names.slice().sort((a,b)=>sq(b).length-sq(a).length)){
+    const a=sq(nm), ab=bare(nm), at=toks(nm);
+    let hit=false;
+    for(const e of keep){
+      const b=sq(e), bb=bare(e), bt=toks(e);
+      if(a===b||at===bt){ hit=true; break; }
+      if(ab.length>=6&&bb.length>=6&&(ab.indexOf(bb)>=0||bb.indexOf(ab)>=0)){ hit=true; break; }
+    }
+    if(!hit) keep.push(nm);
+  }
+  return keep;
+}
+// Fold the vehicles export onto customer rows already converted from the client
+// list. A converted row is [first,last,...,notes,item]: the vehicle text lives
+// in slot 12 for the CSV path, and the structured list goes on the row object
+// so mileage and last-service survive into each vehicle's notes. dedup() carries
+// row.vehicles across a merge keyed on vin+name, so this runs before it.
+function fdMergeVehicles(rows, vehRows){
+  const nn=v=>cl(v).toLowerCase().replace(/\s+/g,' ');
+  const st={rows:vehRows.length,usable:0,owners:0,matchedOwners:0,collapsed:0,
+            created:0,multi:0,replacedJunk:0,unmatched:[]};
+  const own={};
+  for(const r of vehRows){
+    const o=nn(r['Owner']), nm=fdVehTidy(r['Vehicle']);
+    if(!o||!fdVehUsable(nm)) continue;
+    st.usable++;
+    // Fieldd writes mileage as "78,002 mi", which Number() reads as NaN, so
+    // createVehicle's numeric mileage field would drop it silently. Put both
+    // readings in the note text instead - they survive verbatim.
+    const mi=cl(r['Mileage']), ls=cl(r['Last Service']);
+    const extra=[(mi&&mi!=='-')?('Mileage: '+mi):'',(ls&&ls!=='-')?('Last service: '+ls):''].filter(Boolean).join(' | ');
+    (own[o]=own[o]||[]).push({name:nm,notes:extra});
+  }
+  st.owners=Object.keys(own).length;
+  const seen=new Set();
+  for(const row of rows){
+    const key=nn(((row[0]||'')+' '+(row[1]||'')).trim());
+    const list=own[key]; if(!list) continue;
+    const names=fdVehCollapse(list.map(v=>v.name));
+    if(!names.length) continue;
+    if(!seen.has(key)){ seen.add(key); st.matchedOwners++; st.collapsed+=list.length-names.length; }
+    const before=cl(row[12]);
+    if(before&&!fdVehUsable(before)) st.replacedJunk++;
+    row[12]=names.join(' | ');
+    row.vehicles=names.map(n=>{
+      const v=list.find(x=>x.name===n)||{name:n};
+      return {name:v.name,notes:v.notes||''};
+    });
+    st.created+=names.length;
+    if(names.length>1) st.multi++;
+  }
+  for(const o of Object.keys(own)) if(!seen.has(o)) st.unmatched.push(o);
+  // A row the client list never mentioned cannot be given an owner here: the
+  // vehicles export carries no phone or email, so inventing a customer from it
+  // would create a contactless record no later run could match.
+  return st;
+}
+
 function processMixedCustomerFiles(parts){
   const all=[], used=[], skipped=[];
+  // The Fieldd vehicles export is not a customer list - it is one row per
+  // vehicle with an owner's name. Hold it aside and fold it onto the client
+  // rows once those exist, so one drop does what two separate drops cannot.
+  const vehParts=[], custParts=[];
+  for(const p of parts){
+    if(fdVehKind(shapeRaw(p.raw).headerRow)) vehParts.push(p); else custParts.push(p);
+  }
+  if(vehParts.length&&!custParts.length){
+    showError('That is the Fieldd vehicles export. It names owners but carries no phone or email, so it cannot make customers \u2014 drop it together with the Fieldd client list and the vehicles will be attached to those customers.');
+    return;
+  }
+  parts=custParts;
   for(const p of parts){
     const sh=shapeRaw(p.raw);
     const platform=detectPlatform(p.name, sh.headerRow, sh.raw);
@@ -1466,15 +1578,34 @@ function processMixedCustomerFiles(parts){
     showError('None of these '+parts.length+' files matched a format the tool knows. Drop them one at a time to use the manual column mapper.');
     return;
   }
+  // Vehicles before dedup: dedup carries row.vehicles across a merge, and a
+  // customer who appears in two client lists should end up with one record
+  // holding every vehicle, not the first list's share of them.
+  let vehSt=null;
+  if(vehParts.length){
+    const vrows=[].concat(...vehParts.map(p=>shapeRaw(p.raw).objRows));
+    try{ vehSt=fdMergeVehicles(all,vrows); }
+    catch(err){ skipped.push(vehParts.map(p=>p.name).join(', ')+' ('+err.message+')'); }
+  }
   const before=all.length;
   const merged=dedup(all);
   currentKind='customers';
   convertedRows=merged;
-  currentFilename=parts.map(p=>p.name).join(' + ');
+  currentFilename=parts.concat(vehParts).map(p=>p.name).join(' + ');
   const names=[...new Set(used.map(u=>CUSTOMER_PLATFORM_NAMES[u.platform]||u.platform))];
   sourcePlatformName=names.length===1?names[0]:'previous systems';
   document.getElementById('originName').textContent=sourcePlatformName;
   const bits=[used.map(u=>(CUSTOMER_PLATFORM_NAMES[u.platform]||u.platform)+' '+u.count.toLocaleString()).join(' + ')];
+  if(vehSt){
+    const L=n=>n.toLocaleString();
+    bits.push('vehicles export: '+L(vehSt.usable)+' of '+L(vehSt.rows)+' rows usable across '+L(vehSt.owners)+' owners');
+    bits.push(L(vehSt.created)+' vehicle(s) attached to '+L(vehSt.matchedOwners)+' customer(s)'+
+      (vehSt.multi?(', '+L(vehSt.multi)+' of them with more than one'):''));
+    if(vehSt.collapsed) bits.push(L(vehSt.collapsed)+' duplicate spelling(s) of the same vehicle collapsed');
+    if(vehSt.replacedJunk) bits.push(L(vehSt.replacedJunk)+' client row(s) had a mileage reading or bare year in Vehicles \u2014 replaced with the real vehicle');
+    if(vehSt.unmatched.length) bits.push(vehSt.unmatched.length+' vehicle owner(s) are not in the client list and were left out'+
+      (vehSt.unmatched.length<=4?(': '+vehSt.unmatched.join(', ')):''));
+  }
   if(skipped.length) bits.push('NOT read: '+skipped.join(', '));
   showDetected(names.join(' + '), merged.length, Math.max(0,before-merged.length), bits.join(' \u00b7 '));
   showPreview(merged);
@@ -1784,7 +1915,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-10-23e fieldd-card-payments';
+const BUILD='2026-10-23f fieldd-vehicles-merge';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -4784,6 +4915,10 @@ function processRaw(raw, filename){
     return o;
   }).filter(o=>Object.values(o).some(v=>cl(v)));
 
+  if(!platform&&expectedKind!=='products'&&fdVehKind(headerRow)){
+    showError('That is the Fieldd vehicles export. It names owners but carries no phone or email, so it cannot make customers \u2014 drop it together with the Fieldd client list (select both files, or drag them in together) and the vehicles will be attached to those customers.');
+    return;
+  }
   if(!platform){
     // Not a known customer format — is it a products/services file?
     let prodPlatform=detectProductPlatform(filename, headerRow);
