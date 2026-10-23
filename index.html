@@ -1740,7 +1740,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-10-21c match-pool-excludes-imported';
+const BUILD='2026-10-23 square-variable-prices';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -2090,22 +2090,52 @@ function convertHCPPricebook(data){
 }
 
 function convertSquareCatalog(data){
-  // Square item library export: one row per variation → group by Item Name
+  // Square item library export: one row per variation -> group by Item Name
   let groups={}, order=[];
-  const taxKey=Object.keys(data[0]||{}).find(k=>k.startsWith('Tax '));
+  let variablePriced=0, droppedArchived=0;
+  // Square emits one column per tax the merchant configured, and the FIRST one
+  // is not necessarily a sales tax. This shop's first is "Tax - CC & handling
+  // (3.5%)" - a card processing fee - and taking it made Window Tint taxable
+  // when the shop had marked it sales-tax exempt. Prefer a column that names a
+  // sales/VAT/GST tax, and never settle for one that names a fee.
+  const taxCols=Object.keys(data[0]||{}).filter(k=>/^tax\b/i.test(k));
+  const taxKey=taxCols.find(k=>/\b(sales|vat|gst|hst|pst)\b/i.test(k))
+            || taxCols.find(k=>!/(handling|processing|fee|surcharge|convenience|cc\b|card)/i.test(k))
+            || taxCols[0];
+  // Square's "Item Type\" is "Physical good" on everything a merchant never
+  // curated, so it says nothing about whether a row is labour or a part. A
+  // wrap/PPF/tint shop's catalog came through as 60 products and 0 services
+  // because of it. Treat a row as a real good only when the merchant actually
+  // filled in something stock-like; otherwise it is a service.
+  const GOOD_SIGNALS=['SKU','GTIN','Weight (lb)','Stockable'];
+  const looksLikeGood=r=>GOOD_SIGNALS.some(k=>cl(r[k]));
   for(let r of data){
     const name=cl(r['Item Name']);
     if(!name) continue;
-    if(cl(r['Archived'])==='Y') continue;
-    const price=cleanPrice(r['Price']);
-    if(price===null) continue;
+    if(cl(r['Archived'])==='Y'){ droppedArchived++; continue; }
+    // "variable" is Square for "we quote this per job" - 55 of this shop's 60
+    // items. Skipping them silently imported 5 services and lost the rest.
+    // A $0 price point carries the service into the catalog so it can be put
+    // on a job; the LABEL is what the shop reads on the line, so say Quoted
+    // rather than leaving a bare $0.00 that looks like a broken import.
+    const raw=cl(r['Price']);
+    let price=cleanPrice(raw), quoted=false;
+    if(price===null){ price=0; quoted=true; variablePriced++; }
     const key=name.toLowerCase();
-    if(!groups[key]){groups[key]={name,cat:cl(r['Categories']),desc:cl(r['Description']).replace(/\s*\n\s*/g,' '),
-      type:/physical good/i.test(cl(r['Item Type']))?'product':'service',
-      taxable:taxKey?(cl(r[taxKey])==='Y'?'true':'false'):'true',labels:[],prices:[]};order.push(key);}
+    if(!groups[key]){groups[key]={name,cat:cl(r['Categories'])||cl(r['Reporting Category']),
+      desc:cl(r['Description']).replace(/\s*\n\s*/g,' '),
+      type:looksLikeGood(r)?'product':'service',
+      taxable:taxKey?(cl(r[taxKey])==='Y'?'true':'false'):'true',labels:[],prices:[],seen:new Set()};order.push(key);}
     const g=groups[key];
     let label=cl(r['Variation Name']);
     if(label==='Regular') label=cl(r['Option Value 1'])||'';
+    if(quoted&&!label) label='Quoted';
+    // Three identical "Headlight Tint" rows (same variation, same variable
+    // price) would otherwise become one item with three $0.00 price points
+    // labelled Option 1/2/3. One price point per distinct (label, amount).
+    const sig=label+'|'+price;
+    if(g.seen.has(sig)) continue;
+    g.seen.add(sig);
     g.labels.push(label);
     g.prices.push(price);
   }
@@ -2114,9 +2144,14 @@ function convertSquareCatalog(data){
     const g=groups[key];
     const multi=g.prices.length>1;
     out.push([g.type,g.cat,g.name,g.desc,
-      multi?g.labels.map((l,i)=>l||('Option '+(i+1))).join('; '):'',
+      multi?g.labels.map((l,i)=>l||('Option '+(i+1))).join('; '):(g.labels[0]==='Quoted'?'Quoted':''),
       g.prices.map(fmtPrice).join('; '),'',g.taxable,'','']);
   }
+  // Use the gap-reporting channel the products panel already has, so the shop
+  // is told before it writes jobs against a catalog full of $0.00 lines.
+  out._variablePrice=variablePriced;
+  out._sqServices=out.filter(r=>r[0]==='service').length;
+  out._sqProducts=out.filter(r=>r[0]==='product').length;
   return out;
 }
 
@@ -4595,6 +4630,11 @@ function processRaw(raw, filename){
       const gaps=[];
       if(rows._zeroPoints) gaps.push(rows._zeroPoints+' price'+(rows._zeroPoints===1?'':'s')+' at $0.00 to fill in, across '+rows._zeroServices+' service'+(rows._zeroServices===1?'':'s'));
       if(rows._noPrice) gaps.push(rows._noPrice+' with no price \u2014 imported at $0.00');
+      // Square's "variable" is the merchant saying "we quote this per job", not
+      // a missing price. Name it as such, and say the price point is labelled
+      // Quoted so a $0.00 on a job line does not read as a broken import.
+      if(rows._variablePrice) gaps.push(rows._variablePrice+' priced \u201cvariable\u201d in Square \u2014 imported at $0.00 on a price point labelled \u201cQuoted\u201d, set the real price when you quote the job');
+      if(rows._sqServices!=null) gaps.push(rows._sqServices+' service'+(rows._sqServices===1?'':'s')+' / '+rows._sqProducts+' product'+(rows._sqProducts===1?'':'s')+' \u2014 Square marks everything \u201cPhysical good\u201d, so this was decided by whether the row carries a SKU, GTIN, weight or stock flag');
       if(rows._recurring) gaps.push(rows._recurring+' marked recurring \u2014 set up as subscriptions in Urable');
       if(rows._defaulted===rows.length) gaps.push('no categories in the export \u2014 all filed under \u201c'+DEFAULT_PRODUCT_CATEGORY+'\u201d');
       else if(rows._defaulted) gaps.push(rows._defaulted+' without a category \u2014 filed under \u201c'+DEFAULT_PRODUCT_CATEGORY+'\u201d');
