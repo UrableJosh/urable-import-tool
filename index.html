@@ -1764,7 +1764,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-10-23c fieldd-client-list-detect';
+const BUILD='2026-10-23d fieldd-rename-both-paths';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -4547,7 +4547,11 @@ function processRaw(raw, filename){
   if(raw[0]&&raw[0].filter(c=>cl(c)).length===1&&raw[1]&&raw[1].filter(c=>cl(c)).length>3){
     raw=raw.slice(1);
   }
-  let headerRow=raw[0]||[];
+  // Both header-extraction sites must go through the Fieldd rename, not just
+  // shapeRaw: the multi-file bundle path uses shapeRaw, but a single file
+  // dropped on its own is read here. Missing this one meant the newer Fieldd
+  // client list still reported "No records found in this file".
+  let headerRow=fdRenameHeaders(raw[0]||[]);
   // Jobs drop zone: needs a full jobs export (with line items/packages + amounts)
   if(expectedKind==='jobs'){
     const hl=headerRow.map(x=>cl(x).toLowerCase());
