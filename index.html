@@ -1915,7 +1915,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-10-23h crlf-and-ps-guard';
+const BUILD='2026-10-23i rerun-case-shadow-fix';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -6894,6 +6894,19 @@ async function importJobsRun(key){
   const existingCats=new Set(); // category names the account already uses
   // Whether the bare-name slot is currently held by an Imported companion.
   const bareIsImported={};
+  // Which identity keys the shop's OWN catalog owns. The bare-name contest
+  // below is exact-name, so it never fires when a companion differs from the
+  // real service only by CASE: AD Detailing's worksheet writes "Full detail"
+  // while his catalog carries "Full Detail", so pass one made a companion under
+  // the lowercase spelling and pass two resolved the source straight to it,
+  // never reaching the matcher - binding fell 66.7% -> 59.7% and a SECOND
+  // companion appeared holding $260/$295/$330, prices the shop already has.
+  // Settle it on matchKey, which is case- and punctuation-insensitive.
+  const realKeys=new Set();
+  for(const p of exProds){
+    const c=String((p.categoryName||(p.category&&p.category.name)||'')).trim();
+    if(!/^imported$/i.test(c)){ const k=matchKey(String(p.name||'')); if(k) realKeys.add(k); }
+  }
   for(const p of exProds){
     const nm=String(p.name||'');
     const pcat0=String((p.categoryName||(p.category&&p.category.name)||'')).trim();
@@ -6905,7 +6918,10 @@ async function importJobsRun(key){
     // companion - 47 surplus products on one KBC re-run, including a $29.00
     // "Door Jambs" when his own Door Jambs is $29.00. Since "run every import
     // twice" is the retry mechanism, this had to be fixed at the index.
-    const takeBare=!prodMap[nm]||(bareIsImported[nm]&&!isImp);
+    // An Imported companion never takes a slot the shop's own catalog owns,
+    // whatever the spelling.
+    const shadows=isImp&&realKeys.has(matchKey(nm));
+    const takeBare=!shadows&&(!prodMap[nm]||(bareIsImported[nm]&&!isImp));
     if(takeBare){
       prodMap[nm]=p.id;
       bareIsImported[nm]=isImp;
@@ -6914,8 +6930,10 @@ async function importJobsRun(key){
     }
     const mk=matchKey(nm);
     // suffix-insensitive lookup. Prefer the shop's own spelling over an
-    // "(imported)" leftover when both collapse to the same key.
-    if(mk&&(!prodAlias[mk]||(/\(\s*imported\s*\)\s*$/i.test(prodAlias[mk])&&!/\(\s*imported\s*\)\s*$/i.test(nm)))) prodAlias[mk]=nm;
+    // "(imported)" leftover when both collapse to the same key - and over a
+    // companion sitting in the Imported CATEGORY, which carries no such suffix
+    // to tell it apart by.
+    if(mk&&!shadows&&(!prodAlias[mk]||(/\(\s*imported\s*\)\s*$/i.test(prodAlias[mk])&&!/\(\s*imported\s*\)\s*$/i.test(nm)))) prodAlias[mk]=nm;
     const pcat=String((p.categoryName||(p.category&&p.category.name)||'')).trim();
     if(pcat) existingCats.add(pcat.toLowerCase());
     // A companion entry carries the SAME name as the shop's own service and is
