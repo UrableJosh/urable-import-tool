@@ -1915,7 +1915,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-10-23i rerun-case-shadow-fix';
+const BUILD='2026-10-23j companion-pick-richest';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -6942,7 +6942,15 @@ async function importJobsRun(key){
     // creates a second copy of it).
     if(pcat){
       const ck=catKey(nm,pcat);
-      if(!prodMap[ck]){
+      // First-wins here picked the WRONG companion once two of them shared a
+      // name and category: AD Detailing's dev account ended up with
+      // "Full detail" in Imported twice, one holding $260/$295/$330 and one
+      // holding $0/$200/$280/..., and the re-run reused whichever the page
+      // happened to return first. Its price set did not cover what was needed,
+      // so a THIRD copy was created. Prefer the richest entry, which is the one
+      // most likely to already carry the amounts this run is looking for.
+      const better=!prodMap[ck]||((p.prices||[]).length>((exProdPrices[ck]||[]).length));
+      if(better){
         prodMap[ck]=p.id;
         exProdSkus[ck]=new Set((p.prices||[]).map(x=>x.sku).filter(Boolean));
         exProdPrices[ck]=p.prices||[];
