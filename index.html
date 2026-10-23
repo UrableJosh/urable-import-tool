@@ -1486,8 +1486,9 @@ function processMixedCustomerFiles(parts){
 // customers who have one, so neither file is complete on its own. Take both in
 // the jobs box and the single drop builds everything.
 // Fieldd: the jobs export, with its invoices and quotes alongside if they came.
-function processFielddBundle(fdJobs, fdInv, fdQuo, ignored){
-  let jd=[], invSt=null, quoSt=null;
+function processFielddBundle(fdJobs, fdInv, fdQuo, fdPay, ignored){
+  fdPay=fdPay||[];
+  let jd=[], invSt=null, quoSt=null, paySt=null;
   try{
     if(fdJobs) jd=convertFielddJobs(fdJobs.sh.objRows);
     if(fdJobs&&fdInv.length){
@@ -1502,12 +1503,17 @@ function processFielddBundle(fdJobs, fdInv, fdQuo, ignored){
       jd=jd.concat(q);
       jd._fieldd=base||q._fieldd; jd._ownCategories=own||q._ownCategories;
     }
+    // Last, so every job and quote is already in hand to attach a card to.
+    if(fdPay.length){
+      const rows=[].concat(...fdPay.map(x=>x.sh.objRows));
+      paySt=fdApplyPayments(jd,rows);
+    }
   }catch(err){ showError('Conversion error: '+err.message); return; }
   if(!jd.length){ showError('No jobs could be made from those Fieldd files.'); return; }
   expectedKind='jobs'; currentKind='jobs';
   jobsData=jd;
   convertedRows=jobsPreviewRows(jd);
-  currentFilename=[fdJobs&&fdJobs.p.name].concat(fdInv.map(x=>x.p.name),fdQuo.map(x=>x.p.name)).filter(Boolean).join(' + ');
+  currentFilename=[fdJobs&&fdJobs.p.name].concat(fdInv.map(x=>x.p.name),fdQuo.map(x=>x.p.name),fdPay.map(x=>x.p.name)).filter(Boolean).join(' + ');
   sourcePlatformName='Fieldd'+(fdQuo.length&&!fdJobs?' quotes':' jobs');
   document.getElementById('originName').textContent=sourcePlatformName;
   showDetected(sourcePlatformName, jd.length, 0);
@@ -1526,6 +1532,17 @@ function processFielddBundle(fdJobs, fdInv, fdQuo, ignored){
     if(invSt.unmatched) bits.push(L(invSt.unmatched)+' invoices had no matching job');
   }
   if(quoSt) bits.push(L(quoSt.quotes)+' quotes'+(quoSt.booked?(' ('+L(quoSt.booked)+' already booked)'):'')+' brought in as quote jobs');
+  if(paySt){
+    bits.push(L(paySt.rows)+' card rows read: '+L(paySt.settled)+' settled ('+fmtPrice(paySt.settledCents/100)+')');
+    if(paySt.jobsRaised) bits.push(L(paySt.jobsRaised)+' job(s) raised to what the cards settled, +'+fmtPrice(paySt.raisedCents/100)+
+      (paySt.deposits?(' — '+L(paySt.deposits)+' of them a part payment leaving a balance'):''));
+    if(paySt.alreadyCovered) bits.push(L(paySt.alreadyCovered)+' already recorded paid at or above the card total (left alone)');
+    if(paySt.notMoney) bits.push(L(paySt.notMoney)+' declined/pre-auth/voided row(s) ignored ('+fmtPrice(paySt.notMoneyCents/100)+' that never settled)');
+    if(paySt.reversed) bits.push(L(paySt.reversed)+' refund/dispute row(s) noted on the job, not netted ('+fmtPrice(paySt.reversedCents/100)+')');
+    if(paySt.orphan) bits.push(L(paySt.orphan)+' settled card(s) had no matching job and were skipped ('+fmtPrice(paySt.orphanCents/100)+')');
+    if(paySt.cancelledHeld) bits.push(L(paySt.cancelledHeld)+' settled card(s) sit on a voided/cancelled job — noted, NOT imported ('+fmtPrice(paySt.cancelledCents/100)+')');
+    if(paySt.capped) bits.push(L(paySt.capped)+' job(s) had cards above the job total and were capped at it');
+  }
   bits.push('no vehicles in these exports \u2014 each customer gets one placeholder to rename');
   if(ignored&&ignored.length) bits.push('NOT read: '+ignored.join(', '));
   document.getElementById('detStats').textContent=bits.join(' \u00b7 ');
@@ -1598,9 +1615,12 @@ function processJobsBundle(parts){
   }
   // A Fieldd set: the jobs export, and optionally its invoices and quotes.
   {
-    let fdJobs=null; const fdInv=[], fdQuo=[], fdRest=[];
+    let fdJobs=null; const fdInv=[], fdQuo=[], fdPay=[], fdRest=[];
     for(const p of parts){
       const sh=shapeRaw(p.raw);
+      // Payments first: the card report shares 'Job #' and 'Status' with the
+      // jobs export and must not be mistaken for it.
+      if(fdPayKind(sh.headerRow)){ fdPay.push({p,sh}); continue; }
       const k=fdInvKind(sh.headerRow);
       if(k==='invoices'){ fdInv.push({p,sh}); continue; }
       if(k==='quotes'){ fdQuo.push({p,sh}); continue; }
@@ -1610,8 +1630,8 @@ function processJobsBundle(parts){
       if(isFd&&!fdJobs){ fdJobs={p,sh}; continue; }
       fdRest.push(p);
     }
-    if(fdJobs||fdInv.length||fdQuo.length){
-      return processFielddBundle(fdJobs,fdInv,fdQuo,fdRest.map(x=>x.name));
+    if(fdJobs||fdInv.length||fdQuo.length||fdPay.length){
+      return processFielddBundle(fdJobs,fdInv,fdQuo,fdPay,fdRest.map(x=>x.name));
     }
   }
   if(orbClients.length){
@@ -1764,7 +1784,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-10-23d fieldd-rename-both-paths';
+const BUILD='2026-10-23e fieldd-card-payments';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -3701,6 +3721,95 @@ function fdShortDate(v){
   return isNaN(t)?null:t;
 }
 
+// Fieldd card-payments export: Job # | Amount | Card | Status | Date | Customer |
+// Worker | Payout. One row per card ATTEMPT, which is exactly why this file
+// cannot simply be summed. On KBC's 795 rows, 85 are Declined, Pre-Auth,
+// Voided, Invalid CVV or Amount Too Low - $6,163.69 that never moved - and 9
+// more are Refunded, Partial Refund or Disputed, which moved and came back.
+// POST /v1/payments has no DELETE, so a payment written from one of those rows
+// cannot be taken off again without wiping the account.
+function fdPayKind(headerRow){
+  const h=headerRow.map(x=>cl(x).toLowerCase());
+  const has=n=>h.includes(n);
+  return (has('job #')&&has('amount')&&has('card')&&has('status')&&has('payout'))?'payments':'';
+}
+const FD_PAY_OK=/^success$/i;
+const FD_PAY_REVERSED=/^(refunded|partial refund|disputed)$/i;
+
+// The jobs export's own status already marks a job paid when the tender was
+// recorded against it. This file does not replace that judgement - it can only
+// RAISE a job to what the cards actually settled, never lower it. 37 of KBC's
+// jobs took a card for part of the bill and the rest in cash or bank: treating
+// the card report as the authority would quietly un-pay every one of them.
+//
+// What it does catch is the opposite error. 63 of KBC's jobs sit at Inv-Card -
+// invoiced, settled by card - and FD_PAID does not match that status, so they
+// imported completed and unpaid. The card report proves all 63 were paid in
+// full: $28,015.46. Another 16 scheduled jobs took a ~10% deposit the jobs
+// export says nothing about.
+function fdApplyPayments(jobs, payRows){
+  const byNum={};
+  for(const j of jobs){ const n=cl(j.srcRef); if(n) byNum[n]=j; }
+  const st={rows:payRows.length,settled:0,settledCents:0,notMoney:0,notMoneyCents:0,
+            reversed:0,reversedCents:0,orphan:0,orphanCents:0,jobsRaised:0,raisedCents:0,
+            deposits:0,alreadyCovered:0,capped:0,cancelledHeld:0,cancelledCents:0};
+  const agg={}, rev={};
+  for(const r of payRows){
+    const ref=cl(r['Job #']), status=cl(r['Status']), cents=fdMoney(r['Amount']);
+    if(FD_PAY_REVERSED.test(status)){
+      st.reversed++; st.reversedCents+=cents;
+      if(ref) (rev[ref]=rev[ref]||[]).push(status+' $'+(cents/100).toFixed(2));
+      continue;
+    }
+    if(!FD_PAY_OK.test(status)){ st.notMoney++; st.notMoneyCents+=cents; continue; }
+    st.settled++; st.settledCents+=cents;
+    // No job, no payment. A settled card whose job is not in the export is
+    // money with nothing to attach it to, and an unattached payment is exactly
+    // the kind that cannot be deleted afterwards.
+    if(!ref||!byNum[ref]){ st.orphan++; st.orphanCents+=cents; continue; }
+    const a=agg[ref]||(agg[ref]={cents:0,when:null,cards:{}});
+    a.cents+=cents;
+    const t=fdWhen(r['Date']);
+    if(t&&(!a.when||t>a.when)) a.when=t;
+    const c=cl(r['Card']); if(c) a.cards[c]=1;
+  }
+  const note=(j,txt)=>{ j.notes=[j.notes,txt].filter(Boolean).join(' | ').slice(0,1900); };
+  for(const ref of Object.keys(agg)){
+    const j=byNum[ref], a=agg[ref];
+    // A voided or cancelled job carrying a settled card needs a person, not an
+    // import: the invoice says the work never stood and the card says it was
+    // paid. Recording it would be irreversible; saying so is not.
+    if(j.status==='canceled'){
+      st.cancelledHeld++; st.cancelledCents+=a.cents;
+      note(j,'Fieldd card settled $'+(a.cents/100).toFixed(2)+' on a voided/cancelled job — NOT imported, needs review');
+      continue;
+    }
+    const bits=[];
+    let want=a.cents;
+    if(want>j.total){ st.capped++; bits.push('cards settled $'+(a.cents/100).toFixed(2)+', above the job total — recorded at the total'); want=j.total; }
+    if(want>(j.paid||0)){
+      st.raisedCents+=want-(j.paid||0);
+      j.paid=want; st.jobsRaised++;
+      if(a.when) j.paidAt=a.when;
+      const part=want<j.total;
+      if(part) st.deposits++;
+      bits.push('Paid $'+(want/100).toFixed(2)+' by card'+
+        (Object.keys(a.cards).length?' ('+Object.keys(a.cards).join(', ')+')':'')+
+        (part?' — deposit, $'+((j.total-want)/100).toFixed(2)+' balance':'')+
+        ' per the Fieldd card report');
+    } else st.alreadyCovered++;
+    if(rev[ref]) bits.push('Fieldd card reversals: '+rev[ref].join(', ')+' — not netted, review');
+    if(bits.length) note(j,bits.join(' | '));
+  }
+  // A reversal on a job that took no settled card still deserves the note.
+  for(const ref of Object.keys(rev)){
+    if(agg[ref]) continue;
+    const j=byNum[ref]; if(!j) continue;
+    note(j,'Fieldd card reversals: '+rev[ref].join(', ')+' — not netted, review');
+  }
+  return st;
+}
+
 // Fold the invoices export into jobs already built from the jobs export.
 function fdApplyInvoices(jobs, invRows){
   const byNum={};
@@ -4592,6 +4701,12 @@ function processRaw(raw, filename){
       showError('That is the OrbisX payments file. It holds no services, so it cannot make jobs \u2014 drop it together with the invoices and calendar files.');
       return;
     }
+    // The Fieldd card report on its own: it carries amounts but no services,
+    // so it can only enrich jobs that already exist in the same drop.
+    if(fdPayKind(headerRow)){
+      showError('That is the Fieldd card-payments report. It holds no services, so it cannot make jobs \u2014 drop it together with the Fieldd jobs export (and the invoices and quotes if you have them). It can only say what was collected on jobs that are in the same drop.');
+      return;
+    }
     if(!isUrable&&!isDB&&!isTicket&&!isHCP&&!isAgenda&&!isFieldd){
       // The recurring-series half of an agenda export has the same detail
       // column but no times, so say what it is rather than calling it unknown.
@@ -4599,7 +4714,7 @@ function processRaw(raw, filename){
         showError('That is the recurring-series file on its own. It has no appointment times, so it cannot make jobs \u2014 drop it together with the appointments file (Agenda_Square_..._citas).');
         return;
       }
-      showError('This does not look like a supported jobs export. Supported: Urable jobs export, Housecall Pro jobs export, Google Calendar + Square agenda (appointments + series together), Detail Bookie all-jobs export, Detail Bookie ticket scrape, OrbisX (invoices + calendar events + payments), Fieldd jobs export. Send the file to Josh to get the format added.');
+      showError('This does not look like a supported jobs export. Supported: Urable jobs export, Housecall Pro jobs export, Google Calendar + Square agenda (appointments + series together), Detail Bookie all-jobs export, Detail Bookie ticket scrape, OrbisX (invoices + calendar events + payments), Fieldd (jobs + invoices + quotes + card payments). Send the file to Josh to get the format added.');
       return;
     }
     rawObjRows=raw.slice(1).map(r=>{let o={};headerRow.forEach((h,i)=>{o[cl(h)]=r[i]||'';});return o;})
@@ -7235,7 +7350,10 @@ async function importJobsRun(key){
     const r=await apiFetch('/v1/payments',{method:'POST',body:JSON.stringify({
       customerId:custId, jobIds:[jid], total:j.paid,
       paymentMethod:'other', status:'paid',
-      paidAt:j.completedAt||j.end||j.start||Date.now(),
+      // A deposit on a job scheduled for next month was taken TODAY. Dating it
+      // from the appointment would file the money in the wrong period, and for
+      // a future job in the future.
+      paidAt:j.paidAt||j.completedAt||j.end||j.start||Date.now(),
       name:'Imported payment', imported:true})},key);
     if(r.ok&&r.body&&r.body.success){ createdPayments++; }
     else{
