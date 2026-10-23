@@ -706,22 +706,46 @@ function convertShopmonkey(data){
 }
 
 function convertFieldd(data){
-  let out=[];
+  let out=[], fromContact=0, withVehicle=0;
   for(let r of data){
     let name=cl(r['Name']);
     if(!name) continue;
     let parts=name.split(' ');
     let first=parts[0],last=parts.slice(1).join(' ');
-    let rawPhone=cl(r['Phone']).replace(/^'+/,'').replace(/^\+?/,'');
+    // The newer export merges phone and email into one "Contact" cell split by
+    // a middle dot: "(814) 644-1498 · greg@example.com". Either half can be
+    // missing, and which half is which is decided by the @, not by position.
+    let rawPhone=cl(r['Phone']), rawEmail=cl(r['Email']);
+    if(!rawPhone&&!rawEmail){
+      const contact=cl(r['Contact']);
+      if(contact){
+        for(const bit of contact.split(/[·•|]/)){
+          const t=cl(bit); if(!t) continue;
+          if(t.includes('@')){ if(!rawEmail) rawEmail=t; }
+          else if(/\d/.test(t)){ if(!rawPhone) rawPhone=t; }
+        }
+        if(rawPhone||rawEmail) fromContact++;
+      }
+    }
+    rawPhone=rawPhone.replace(/^'+/,'').replace(/^\+?/,'');
     let digits=rawPhone.replace(/\D/g,'');
     let phone=digits.length===11&&digits[0]==='1'?digits.slice(1):digits;
-    let email=cleanEmail(r['Email']);
+    let email=cleanEmail(rawEmail);
     let added=cl(r['Added On']);
     let [a1,a2,city,state,zip,country]=parseFielddAddress(cl(r['Address']));
     let notes=added?'Customer since: '+added:'';
-    out.push([first,last,'Person',a1,a2,city,state,zip,country,phone,email,notes,'']);
+    // The newer export also carries the customer's vehicles. Urable's customer
+    // row takes them in the last column, so they ride in with the customer
+    // instead of becoming placeholders on the jobs pass - 591 of those were
+    // created on the previous KBC run purely because we had none.
+    let veh=cl(r['Vehicles']);
+    if(veh==='-') veh='';
+    if(veh) withVehicle++;
+    out.push([first,last,'Person',a1,a2,city,state,zip,country,phone,email,notes,veh]);
   }
-  return dedup(out);
+  const rows=dedup(out);
+  rows._fdCust={fromContact,withVehicle};
+  return rows;
 }
 
 // A list already flattened to one row per person, with the whole name in one
@@ -1740,7 +1764,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-10-23 square-variable-prices';
+const BUILD='2026-10-23b fieldd-new-export-headers';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -3570,19 +3594,35 @@ function convertFielddJobs(data){
     if(taxC>0){ adjustments.push({type:'fee',name:'Sales tax',cents:taxC}); st.taxCents+=taxC; }
     if(tipC>0){ adjustments.push({type:'fee',name:'Tip',cents:tipC}); st.tipCents+=tipC; }
 
+    const start=fdWhen(r['Date & Time']);
+    if(!start) st.noDate++;
+
     const rawStatus=cl(r['Status']);
-    const status=FD_STATUS[rawStatus.toLowerCase()]||(rawStatus?'completed':'scheduled');
+    // 64 of KBC's 606 jobs carry no status at all. Defaulting them to
+    // "scheduled" put finished work on the calendar as upcoming; skipping them
+    // lost the job and its money. Decide by date: work whose date has passed
+    // happened, work dated ahead has not. A blank-status job is left UNPAID -
+    // the invoices file is what marks anything paid, so if it was settled that
+    // file says so and this does not have to guess.
+    let status, blankByDate=false;
+    if(rawStatus) status=FD_STATUS[rawStatus.toLowerCase()]||'completed';
+    else {
+      status=(start&&start>Date.now())?'scheduled':'completed';
+      blankByDate=true;
+      st.blankStatus=(st.blankStatus||0)+1;
+      if(status==='scheduled') st.blankFuture=(st.blankFuture||0)+1;
+      else st.blankPast=(st.blankPast||0)+1;
+    }
     if(status==='canceled') st.cancelled++;
     const paidNow=FD_PAID.test(rawStatus);
     if(!paidNow&&status!=='canceled') st.unpaid++;
-
-    const start=fdWhen(r['Date & Time']);
-    if(!start) st.noDate++;
     const mins=fdDuration(r['Scheduled Duration']);
     const [a1,city,state,zip]=splitLooseAddress(r['Location']);
 
     const npz=[];
     if(cl(r['Job #'])) npz.push('Fieldd '+cl(r['Job #']));
+    if(blankByDate) npz.push('Fieldd recorded no status for this job \u2014 imported as '+
+      status+' because its date had '+(status==='scheduled'?'not yet passed':'passed'));
     if(included.length) npz.push('Package includes: '+
       included.map(x=>cl(x.name).replace(FD_INCLUDED,'').trim()).filter(Boolean).join(', '));
     if(rawStatus) npz.push('Fieldd status: '+rawStatus);
@@ -4458,9 +4498,35 @@ function convertCustomerRows(platform, raw, rawObjRows){
   return [];
 }
 // header row + header-keyed rows, the shape every converter expects
+// Fieldd renamed its export columns around Oct 2026: Date & Time -> Time,
+// Line Items -> Service, Grand Total -> Total, Worker -> Team on jobs; Line
+// Items -> Service on invoices and quotes; and the customer export became
+// Customer / Contact / Added with phone and email merged into one field. Both
+// generations are in the wild - KBC's first export used the old names - so
+// rename the NEW ones to the OLD ones here, before detection or any converter
+// sees them, and leave every other platform untouched.
+// The names are generic ("Service", "Total", "Time"), so each rename is gated
+// on a signature only that Fieldd export has.
+function fdRenameHeaders(headerRow){
+  const hl=headerRow.map(x=>cl(x).toLowerCase());
+  const has=n=>hl.includes(n);
+  let map=null;
+  if(has('job #')&&has('service')&&has('total')&&!has('line items')&&
+     (has('mins traveled')||has('miles traveled')||has('margin')))
+    map={'time':'Date & Time','service':'Line Items','total':'Grand Total','team':'Worker'};
+  else if(has('inv. no.')&&has('service')&&!has('line items'))
+    map={'service':'Line Items'};
+  else if(has('quote #')&&has('service')&&!has('line items'))
+    map={'service':'Line Items'};
+  else if(has('customer')&&has('contact')&&has('billed')&&has('added')&&!has('name'))
+    map={'customer':'Name','added':'Added On'};
+  if(!map) return headerRow;
+  return headerRow.map(h=>{ const k=cl(h).toLowerCase(); return map[k]||h; });
+}
+
 function shapeRaw(raw){
   if(raw[0]&&raw[0].filter(c=>cl(c)).length===1&&raw[1]&&raw[1].filter(c=>cl(c)).length>3) raw=raw.slice(1);
-  const headerRow=raw[0]||[];
+  const headerRow=fdRenameHeaders(raw[0]||[]);
   const objRows=raw.slice(1).map(r=>{const o={};headerRow.forEach((h,i)=>{o[cl(h)]=r[i]||'';});return o;})
     .filter(o=>Object.values(o).some(v=>cl(v)));
   return {raw, headerRow, objRows};
