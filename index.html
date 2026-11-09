@@ -1656,6 +1656,8 @@ function processFielddBundle(fdJobs, fdInv, fdQuo, fdPay, ignored){
   if(fd.repriced) bits.push(L(fd.repriced)+' repriced at the job level ('+fmtPrice(fd.repricedCents/100)+' as adjustments)');
   if(fd.includedLines) bits.push(L(fd.includedLines)+' \u201c(Included)\u201d package lines kept as job notes instead of catalog entries');
   if(fd.taxCents) bits.push(fmtPrice(fd.taxCents/100)+' tax');
+  if(fd.paidByColumn) bits.push(L(fd.paidByColumn)+' job(s) marked paid from the export\u2019s Payment column that the status alone calls unpaid');
+  if(fd.crew) bits.push(L(fd.crew)+' carry a second crew member');
   if(fd.tipCents) bits.push(fmtPrice(fd.tipCents/100)+' tips');
   if(invSt){
     bits.push(L(invSt.matched)+' matched to the invoices export');
@@ -1915,7 +1917,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-10-23j companion-pick-richest';
+const BUILD='2026-11-09a fieldd-payment-column';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -3675,16 +3677,40 @@ const FD_STATUS={'paid-card':'completed','paid-cash':'completed','paid-bank':'co
   'accepted':'scheduled','pending':'scheduled','new booking':'scheduled','confirmed':'scheduled',
   // Work started but not finished. Urable has a status for this; without it
   // these land as completed and the shop loses the jobs still on the floor.
-  'in progress':'in progress','started':'in progress','after photos':'in progress'};
+  'in progress':'in progress','started':'in progress','after photos':'in progress',
+  // The Nov 2026 export added the pre-service stages of Fieldd's checklist.
+  // Without them they fall through to the "completed" default and 20 of one
+  // shop's jobs were finished work that had not been started.
+  'before check':'in progress','before photos':'in progress','during photos':'in progress',
+  'on the way':'in progress','arrived':'in progress',
+  'complete':'completed','completed':'completed','done':'completed'};
 // Paid at the time of the job, by any tender. "Ext-Pay" is settled outside
 // Fieldd, which is still money in \u2014 it just did not come through their card
 // reader, and calling it unpaid understates the shop's history.
 const FD_PAID=/^(paid-|ext-pay$|paid$|no charge$)/i;
+// The Nov 2026 export added a Payment column holding the tender - Card, Cash,
+// Bank transfer, No charge, or blank. On 2,543 jobs it agreed with FD_PAID on
+// every row FD_PAID claimed and caught 770 more it did not: every Inv-Card and
+// Inv-Bank job, $396,055.34 of settled money that the status alone calls
+// unpaid. Where the column exists it is the authority; FD_PAID stays the
+// fallback for the older export, which has no such column.
+const FD_TENDER=/^(card|cash|bank transfer|check|cheque|other|no charge|ext|external)/i;
+function fdSettled(row, rawStatus, hasPaymentCol){
+  if(hasPaymentCol){
+    const t=cl(row['Payment']);
+    return !!t && FD_TENDER.test(t);
+  }
+  return FD_PAID.test(rawStatus);
+}
 
 function convertFielddJobs(data){
   const st={noCustomer:0,noDate:0,collapsedAddons:0,repriced:0,repricedCents:0,
     taxCents:0,tipCents:0,sizedLines:0,categorised:0,zeroLines:0,canonicalised:0,
-    cancelled:0,unpaid:0,doubledNames:0,includedLines:0};
+    cancelled:0,unpaid:0,doubledNames:0,includedLines:0,paidByColumn:0,crew:0};
+  // Present only in the Nov 2026 generation. Decided once from the data rather
+  // than per row, so a run of blank tenders in an older export cannot be read
+  // as "nothing was ever paid".
+  const hasPaymentCol=data.some(r=>Object.prototype.hasOwnProperty.call(r,'Payment'));
   // Every head in the file, so the canonical-prefix pass can see them all.
   const heads=[], rawSizes=[];
   for(const r of data) for(const li of fdParseLines(r['Line Items'])){
@@ -3780,7 +3806,8 @@ function convertFielddJobs(data){
       else st.blankPast=(st.blankPast||0)+1;
     }
     if(status==='canceled') st.cancelled++;
-    const paidNow=FD_PAID.test(rawStatus);
+    const paidNow=fdSettled(r,rawStatus,hasPaymentCol);
+    if(paidNow&&!FD_PAID.test(rawStatus)) st.paidByColumn=(st.paidByColumn||0)+1;
     if(!paidNow&&status!=='canceled') st.unpaid++;
     const mins=fdDuration(r['Scheduled Duration']);
     const [a1,city,state,zip]=splitLooseAddress(r['Location']);
@@ -3795,6 +3822,14 @@ function convertFielddJobs(data){
     if(delta!==0) npz.push('Lines total '+fmtPrice(subtotal/100)+' but the job was charged '+fmtPrice(preTax/100)+' before tax');
     for(const t of fdTags(r['Tags'])) npz.push('Tag: '+t);
     if(cl(r['Worker'])) npz.push('Worker: '+cl(r['Worker']));
+    // A second name, never the same as Worker - 99 of one shop's jobs carried
+    // both and not one pair matched, so this is the helper on the job, not a
+    // duplicate of the lead.
+    if(cl(r['Crew'])){ npz.push('Crew: '+cl(r['Crew'])); st.crew++; }
+    // The tender, so the shop can see HOW a job settled. The payment record
+    // itself still posts as paymentMethod "other" until we know which values
+    // POST /v1/payments accepts.
+    if(cl(r['Payment'])) npz.push('Paid by '+cl(r['Payment']).toLowerCase());
     if(cl(r['Rating'])) npz.push('Rating: '+cl(r['Rating']));
     const miles=cl(r['Miles Traveled']);
     if(miles&&parseFloat(miles)>0) npz.push('Travelled '+miles+' miles');
@@ -5047,6 +5082,8 @@ function processRaw(raw, filename){
       if(fd.includedLines) bits.push(L(fd.includedLines)+' \u201c(Included)\u201d package lines kept as job notes instead of catalog entries');
       if(fd.repriced) bits.push(L(fd.repriced)+' jobs were repriced at the job level ('+fmtPrice(fd.repricedCents/100)+' carried as adjustments)');
       if(fd.taxCents) bits.push(fmtPrice(fd.taxCents/100)+' tax');
+  if(fd.paidByColumn) bits.push(L(fd.paidByColumn)+' job(s) marked paid from the export\u2019s Payment column that the status alone calls unpaid');
+  if(fd.crew) bits.push(L(fd.crew)+' carry a second crew member');
       if(fd.tipCents) bits.push(fmtPrice(fd.tipCents/100)+' tips');
       if(fd.cancelled) bits.push(L(fd.cancelled)+' cancelled');
       if(fd.doubledNames) bits.push(L(fd.doubledNames)+' doubled customer names collapsed');
