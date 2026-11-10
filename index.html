@@ -1917,7 +1917,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-11-09a fieldd-payment-column';
+const BUILD='2026-11-09b jobber-invoices';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -4020,6 +4020,270 @@ function convertJobsWorksheet(data){
 // booked - 150 of 174 in that same shop. Those become quote-status jobs so the
 // shop keeps its open pipeline and the people attached to it.
 
+// ─── Jobber invoices ────────────────────────────────────────────────────────
+// Hot Shot Wash n Rescue runs windows, pressure washing, gutters AND auto
+// detailing out of Jobber, and the only export available is the invoice
+// report - no jobs file, no client file, no vehicles. So the invoice IS the
+// job here: one row, one customer, one service address, one set of lines.
+//
+// Three things in this shape are unlike every other jobs export the tool
+// reads, and each one is a way to get the money wrong:
+//
+//  1. The line cell is "Name (qty, $lineTotal)" and that dollar figure is the
+//     LINE total, not a unit price. "Exterior Window Cleaning (45, $382.50)"
+//     is 45 windows at $8.50, not 45 x $382.50. The amount is taken as-is and
+//     the count goes on the job and into the price label.
+//  2. Discount and tax are invoice-level, not per line. Urable computes
+//     total = lines - discounts + fees, so the lines have to carry the GROSS
+//     (pre-tax + discount) for the discount to survive as a discount. That
+//     reconciles on all 109 of Hot Shot's invoices.
+//  3. Tip sits ON TOP of Total, unlike every other column here.
+function jbInvKind(headerRow){
+  const h=(headerRow||[]).map(x=>cl(x).toLowerCase());
+  const j='|'+h.join('|')+'|';
+  if(!j.includes('|invoice #|')||!j.includes('|line items|')) return '';
+  if(!j.includes('|client name|')) return '';
+  if(!/\|pre-tax total/.test(j)&&!/\|total \(\$\)\|/.test(j)) return '';
+  return 'invoices';
+}
+// Jobber writes "Nov 06, 2026". Date.parse manages it, but it lands at
+// midnight UTC and a shop west of Greenwich then sees the job a day early.
+// Noon local keeps the date the shop typed.
+const JB_MON={jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+function jbWhen(v){
+  const s=cl(v); if(!s||s==='-') return null;
+  const m=/^([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})$/.exec(s);
+  if(m){
+    const mo=JB_MON[m[1].toLowerCase()];
+    if(mo===undefined) return null;
+    const t=new Date(parseInt(m[3],10),mo,parseInt(m[2],10),12,0).getTime();
+    return isNaN(t)?null:t;
+  }
+  return parseJobDate(s);
+}
+// The Line items cell is comma-separated, but a service name can hold its own
+// commas and its own parentheses - "Decks (wood or composite)" and "Garage
+// Power Wash (Epoxy Floors)" are both real entries here. Splitting on every
+// comma invented three phantom services ("wood or composite)" among them), so
+// split only at paren depth zero and read the (qty, $total) off the end.
+const JB_TAIL=/^(.*?)\s*\((\d+(?:[.,]\d+)?),\s*\$([\d,]+(?:\.\d{1,2})?)\)$/;
+function jbSplitLines(s){
+  const out=[]; let depth=0, cur='';
+  for(const ch of String(s||'')){
+    if(ch==='(') depth++;
+    else if(ch===')') depth--;
+    if(ch===','&&depth<=0){ out.push(cur); cur=''; }
+    else cur+=ch;
+  }
+  out.push(cur);
+  return out.map(x=>cl(x)).filter(Boolean);
+}
+// Jobber's invoice report carries a service ZIP but no state, and Urable needs
+// one to place the address. ZIP1/ZIP3 ranges are stable enough to resolve it.
+const JB_ZIP_STATE=[['006','009','PR'],['010','027','MA'],['028','029','RI'],
+ ['030','038','NH'],['039','049','ME'],['050','059','VT'],['060','069','CT'],
+ ['070','089','NJ'],['100','149','NY'],['150','196','PA'],['197','199','DE'],
+ ['200','205','DC'],['206','219','MD'],['220','246','VA'],['247','268','WV'],
+ ['270','289','NC'],['290','299','SC'],['300','319','GA'],['320','349','FL'],
+ ['350','369','AL'],['370','385','TN'],['386','397','MS'],['398','399','GA'],
+ ['400','427','KY'],['430','459','OH'],['460','479','IN'],['480','499','MI'],
+ ['500','528','IA'],['530','549','WI'],['550','567','MN'],['570','577','SD'],
+ ['580','588','ND'],['590','599','MT'],['600','629','IL'],['630','658','MO'],
+ ['660','679','KS'],['680','693','NE'],['700','714','LA'],['716','729','AR'],
+ ['730','749','OK'],['750','799','TX'],['800','816','CO'],['820','831','WY'],
+ ['832','838','ID'],['840','847','UT'],['850','865','AZ'],['870','884','NM'],
+ ['885','885','TX'],['889','898','NV'],['900','961','CA'],['967','968','HI'],
+ ['970','979','OR'],['980','994','WA'],['995','999','AK']];
+function jbZipState(zip){
+  const z=cl(zip).replace(/[^0-9]/g,'');
+  if(z.length<5) return '';
+  const p=z.slice(0,3);
+  for(const [lo,hi,st] of JB_ZIP_STATE) if(p>=lo&&p<=hi) return st;
+  return '';
+}
+const JB_STATUS={'paid':'completed','awaiting payment':'completed','sent':'completed',
+  'overdue':'completed','past due':'completed','bad debt':'completed',
+  'draft':'quote','void':'canceled','voided':'canceled'};
+function convertJobberInvoices(data){
+  const st={rows:0,noName:0,noLines:0,lines:0,measured:0,
+            discounts:0,discountCents:0,taxed:0,taxCents:0,tips:0,tipCents:0,
+            deposits:0,depositCents:0,unpaid:0,unpaidCents:0,
+            noDate:0,noAddr:0,noState:0,reissued:0,reissuedCents:0,zeroLines:0,zeroJobs:0,
+            subtotalCents:0,paidCents:0,svcNames:0,leadSources:0,markate:0};
+  // Two of Hot Shot's job numbers carry two invoices each, with the SAME line
+  // items on both - a reissue, not split billing. Importing both would create
+  // two jobs and bill the customer twice. Where the lines differ the two
+  // invoices are genuinely different work and both are kept.
+  const byJob={};
+  for(const r of data){
+    const ref=cl(r['Job #s']); if(!ref) continue;
+    (byJob[ref]=byJob[ref]||[]).push(r);
+  }
+  const drop=new Set(), reissueNote={};
+  for(const ref of Object.keys(byJob)){
+    const group=byJob[ref]; if(group.length<2) continue;
+    const seen={};
+    for(const r of group){
+      const sig=cl(r['Line items']);
+      (seen[sig]=seen[sig]||[]).push(r);
+    }
+    for(const sig of Object.keys(seen)){
+      const dup=seen[sig]; if(dup.length<2) continue;
+      // Keep the fullest record: the higher total carries the tax the other
+      // one is missing. Equal totals fall back to the original issue.
+      dup.sort((a,b)=>(moneyCents(b['Total ($)'])-moneyCents(a['Total ($)']))
+                      ||(parseInt(cl(a['Invoice #']),10)-parseInt(cl(b['Invoice #']),10)));
+      const keep=dup[0];
+      for(const r of dup.slice(1)){
+        drop.add(r);
+        st.reissued++; st.reissuedCents+=moneyCents(r['Total ($)']);
+        reissueNote[cl(keep['Invoice #'])]=(reissueNote[cl(keep['Invoice #'])]||[]).concat(cl(r['Invoice #']));
+      }
+    }
+  }
+  const svcSeen={}, leadSeen={};
+  const jobs=[];
+  for(const r of data){
+    st.rows++;
+    if(drop.has(r)) continue;
+    const name=cl(r['Client name']);
+    if(!name){ st.noName++; continue; }
+    const inv=cl(r['Invoice #']), ref=cl(r['Job #s']);
+
+    const names=[], cents=[], cats=[], sizes=[], qtyBits=[];
+    for(const seg of jbSplitLines(r['Line items'])){
+      const m=JB_TAIL.exec(seg);
+      // A segment that does not end in (qty, $total) is still a service the
+      // shop performed - keep it at zero rather than dropping the line, and
+      // the invoice reconciliation below will report the gap.
+      const nm=cl(m?m[1]:seg);
+      if(!nm) continue;
+      const q=m?parseFloat(String(m[2]).replace(/,/g,'')):1;
+      const c=m?Math.round(parseFloat(String(m[3]).replace(/,/g,''))*100):0;
+      names.push(nm); cents.push(c); cats.push('Imported');
+      // The count is what distinguishes one price from another on a measured
+      // service: Exterior Window Cleaning is priced 21 different ways here and
+      // "x14" reads better on the line than "$140.00". A one-off service has
+      // nothing to say, so its price point keeps its amount as the label.
+      if(q&&q!==1){
+        sizes.push('×'+q.toLocaleString());
+        qtyBits.push(nm+' ×'+q.toLocaleString());
+        st.measured++;
+      } else sizes.push('');
+      if(!c) st.zeroLines++;
+      st.lines++;
+      if(!svcSeen[nm]){ svcSeen[nm]=1; st.svcNames++; }
+    }
+    if(!names.length){ st.noLines++; continue; }
+
+    const preTax=moneyCents(r['Pre-tax total ($)']);
+    const totalCol=moneyCents(r['Total ($)']);
+    const taxC=moneyCents(r['Tax amount ($)']);
+    const tipC=moneyCents(r['Tip ($)']);
+    const disc=moneyCents(r['Discount ($)']);
+    const bal=moneyCents(r['Balance ($)']);
+    const dep=moneyCents(r['Deposit $']);
+    const subtotal=cents.reduce((a,b)=>a+b,0);
+    st.subtotalCents+=subtotal;
+
+    const adjustments=[];
+    if(disc>0){ adjustments.push({type:'discount',name:'Jobber discount',cents:disc});
+                st.discounts++; st.discountCents+=disc; }
+    // The tax label names the jurisdiction ("Williamson county Sales Tax
+    // (8.25%)"), which is worth keeping on the job - 8 different ones appear
+    // across this one account.
+    const taxLabel=cl(r['Tax (%)']);
+    if(taxC>0){ adjustments.push({type:'fee',name:(taxLabel&&taxLabel!=='-')?taxLabel:'Sales tax',cents:taxC});
+                st.taxed++; st.taxCents+=taxC; }
+    if(tipC>0){ adjustments.push({type:'fee',name:'Tip',cents:tipC}); st.tips++; st.tipCents+=tipC; }
+
+    // lines - discount + tax + tip. On a clean invoice that is Total + Tip.
+    const total=subtotal-disc+taxC+tipC;
+    const rawStatus=cl(r['Status']);
+    const status=JB_STATUS[rawStatus.toLowerCase()]||'completed';
+    // Balance is what is still owed on the invoice; the tip rides along with
+    // whatever was settled. A voided invoice collected nothing.
+    if(!total) st.zeroJobs++;
+    const paid=status==='canceled'?0:Math.max(0,total-Math.max(0,bal));
+    st.paidCents+=paid;
+    if(bal>0){ st.unpaid++; st.unpaidCents+=bal; }
+    if(dep>0){ st.deposits++; st.depositCents+=dep; }
+
+    const issued=jbWhen(r['Issued date']);
+    const paidAt=jbWhen(r['Marked paid date']);
+    const created=jbWhen(r['Created date']);
+    const start=issued||created||paidAt;
+    if(!start) st.noDate++;
+
+    const a1=cl(r['Service street']), city=cl(r['Service city']), zip=cl(r['Service ZIP']);
+    const state=jbZipState(zip);
+    if(!a1&&!city) st.noAddr++;
+    else if(!state&&zip) st.noState++;
+
+    const subject=cl(r['Subject']);
+    const lead=cl(r['Lead source']);
+    if(lead&&!leadSeen[lead]){ leadSeen[lead]=1; st.leadSources++; }
+    if(/markate/i.test(subject)) st.markate++;
+
+    const np=[];
+    if(inv) np.push('Jobber invoice #'+inv);
+    if(subject) np.push('Invoice subject: '+subject);
+    if(qtyBits.length) np.push('Billed by count: '+qtyBits.join(', '));
+    // A $0.00 line is real here, not a parse miss: this shop itemises the work
+    // it bundled into a minimum-service charge, and comps screens and
+    // assessments outright. Say so on the job, because a $0 service that
+    // arrives without explanation reads like the import lost the price.
+    const freeLines=names.filter((n,i)=>!cents[i]);
+    if(freeLines.length) np.push('Billed at $0.00 on the invoice (included or comped): '+freeLines.join(', '));
+    if(disc>0) np.push('Jobber discount '+fmtPrice(disc/100)+' off '+fmtPrice(subtotal/100));
+    if(taxC>0&&taxLabel&&taxLabel!=='-') np.push(taxLabel+': '+fmtPrice(taxC/100));
+    if(tipC>0) np.push('Tip '+fmtPrice(tipC/100)+' (on top of the invoice total)');
+    // A deposit on a settled invoice is history, not money still owed - the
+    // balance is what decides whether anything is outstanding.
+    if(dep>0) np.push('Deposit of '+fmtPrice(dep/100)+' was collected up front');
+    if(bal>0) np.push(fmtPrice(bal/100)+' still outstanding in Jobber ('+rawStatus+')');
+    if(paidAt&&paidAt!==start) np.push('Marked paid '+new Date(paidAt).toLocaleDateString());
+    if(lead) np.push('Lead source: '+lead);
+    if(reissueNote[inv]) np.push('Jobber also held invoice #'+reissueNote[inv].join(', #')+
+      ' for this same job with identical line items — not imported, it would have billed the work twice');
+    // Say it on the job when the file's own arithmetic does not close, rather
+    // than silently importing a number nobody can trace.
+    if(preTax&&subtotal-disc!==preTax)
+      np.push('Jobber pre-tax total was '+fmtPrice(preTax/100)+'; the line items come to '+
+              fmtPrice((subtotal-disc)/100)+' after the discount — imported from the lines');
+    if(totalCol&&(preTax+taxC)!==totalCol)
+      np.push('Jobber invoice total was '+fmtPrice(totalCol/100)+', which is not pre-tax plus tax — review');
+
+    jobs.push({
+      num:'', srcRef:ref,
+      status:status,
+      // A mobile shop: the work happened at the service address. Jobs whose
+      // customer has no address on the account fall back to shop jobs later.
+      type:(a1||city)?'field':'shop',
+      // "PAST WORK DONE ON MARKATE" is the subject on 33 of these - it names
+      // the migration, not the work. The service does.
+      title:names[0]+(names.length>1?(' +'+(names.length-1)+' more'):''),
+      customer:{ name:name, email:cleanEmail(r['Client email']), phone:usPhone(r['Client phone']),
+        a1:a1,a2:'',city:city,state:state,zip:zip,country:countryFor(state,zip,cl(r['Client phone'])) },
+      vehicles:[], vehiclesRaw:'', vins:[], plates:[],
+      itemType:'automotive',
+      completedAt:(status==='completed')?(paidAt||start):null,
+      updatedAt:paidAt||start,
+      lineItems:names, lineCents:cents, lineCats:cats, lineSizes:sizes,
+      subtotal:subtotal,
+      perLineCents:names.length?Math.floor(subtotal/names.length):subtotal,
+      firstLineCents:names.length?subtotal-Math.floor(subtotal/names.length)*(names.length-1):subtotal,
+      adjustments:adjustments,
+      start:start, end:start, dropOff:start, allDay:false,
+      taxed:taxC>0,
+      notes:np.join(' | ').slice(0,1900),
+      total:total, paid:paid
+    });
+  }
+  jobs._jobber=st;
+  return jobs;
+}
+
 function fdInvKind(headerRow){
   const h=(headerRow||[]).map(x=>cl(x).toLowerCase());
   const j='|'+h.join('|')+'|';
@@ -4995,7 +5259,10 @@ function processRaw(raw, filename){
     const isFieldd=hl.includes('line items')&&hl.includes('grand total')&&
       (hl.includes('mins traveled')||hl.includes('miles traveled')||(hl.includes('margin')&&hl.includes('worker')));
     // The hand-built worksheet: one row per job, named customer, one service.
-    const isWorksheet=!isFieldd&&!isUrable&&!isHCP&&!isDB&&!isTicket&&!isAgenda&&!!jwKind(headerRow);
+    // Jobber's invoice report. No jobs file exists for it, so the invoice is
+    // the job: one row, one customer, one service address, one set of lines.
+    const isJobber=!!jbInvKind(headerRow);
+    const isWorksheet=!isFieldd&&!isUrable&&!isHCP&&!isDB&&!isTicket&&!isAgenda&&!isJobber&&!!jwKind(headerRow);
     // One OrbisX file on its own still works, with less in it: invoices alone
     // have no appointment times, the calendar alone has no line-item prices.
     const fk=fdInvKind(headerRow);
@@ -5026,14 +5293,14 @@ function processRaw(raw, filename){
       showError('That is the Fieldd card-payments report. It holds no services, so it cannot make jobs \u2014 drop it together with the Fieldd jobs export (and the invoices and quotes if you have them). It can only say what was collected on jobs that are in the same drop.');
       return;
     }
-    if(!isUrable&&!isDB&&!isTicket&&!isHCP&&!isAgenda&&!isFieldd&&!isWorksheet){
+    if(!isUrable&&!isDB&&!isTicket&&!isHCP&&!isAgenda&&!isFieldd&&!isWorksheet&&!isJobber){
       // The recurring-series half of an agenda export has the same detail
       // column but no times, so say what it is rather than calling it unknown.
       if(hl.includes('detalle_original')&&hl.includes('proxima_cita_pr')){
         showError('That is the recurring-series file on its own. It has no appointment times, so it cannot make jobs \u2014 drop it together with the appointments file (Agenda_Square_..._citas).');
         return;
       }
-      showError('This does not look like a supported jobs export. Supported: Urable jobs export, Housecall Pro jobs export, Google Calendar + Square agenda (appointments + series together), Detail Bookie all-jobs export, Detail Bookie ticket scrape, OrbisX (invoices + calendar events + payments), Fieldd (jobs + invoices + quotes + card payments), and a hand-built jobs worksheet (First/Last Name, Vehicle, Service, Date, Start Time, Price or Deposit Paid + Balance Due). Send the file to Josh to get the format added.');
+      showError('This does not look like a supported jobs export. Supported: Urable jobs export, Housecall Pro jobs export, Google Calendar + Square agenda (appointments + series together), Detail Bookie all-jobs export, Detail Bookie ticket scrape, OrbisX (invoices + calendar events + payments), Fieldd (jobs + invoices + quotes + card payments), Jobber invoice report, and a hand-built jobs worksheet (First/Last Name, Vehicle, Service, Date, Start Time, Price or Deposit Paid + Balance Due). Send the file to Josh to get the format added.');
       return;
     }
     rawObjRows=raw.slice(1).map(r=>{let o={};headerRow.forEach((h,i)=>{o[cl(h)]=r[i]||'';});return o;})
@@ -5042,11 +5309,11 @@ function processRaw(raw, filename){
       showError('This jobs export has no Line Items / amount columns, so jobs can\'t be recreated from it. You can still drop it in the customers box to extract the customer list.');
       return;
     }
-    jobsData=isWorksheet?convertJobsWorksheet(rawObjRows):(isFieldd?convertFielddJobs(rawObjRows):(isAgenda?convertAgendaJobs(rawObjRows):(isHCP?convertHCPJobs(rawObjRows):(isTicket?convertDBTickets(rawObjRows):(isDB?convertDetailBookieJobs(rawObjRows):parseJobsExport(rawObjRows))))));
+    jobsData=isJobber?convertJobberInvoices(rawObjRows):(isWorksheet?convertJobsWorksheet(rawObjRows):(isFieldd?convertFielddJobs(rawObjRows):(isAgenda?convertAgendaJobs(rawObjRows):(isHCP?convertHCPJobs(rawObjRows):(isTicket?convertDBTickets(rawObjRows):(isDB?convertDetailBookieJobs(rawObjRows):parseJobsExport(rawObjRows)))))));
     if(!jobsData.length){ showError('No jobs found in this file.'); return; }
     currentKind='jobs';
     convertedRows=jobsPreviewRows(jobsData);
-    sourcePlatformName=isWorksheet?'Jobs worksheet':(isFieldd?'Fieldd jobs':(isAgenda?'Google Calendar + Square agenda':(isHCP?'Housecall Pro jobs':(isTicket?'Detail Bookie ticket scrape':(isDB?'Detail Bookie jobs':'Jobs export')))));
+    sourcePlatformName=isJobber?'Jobber invoices':(isWorksheet?'Jobs worksheet':(isFieldd?'Fieldd jobs':(isAgenda?'Google Calendar + Square agenda':(isHCP?'Housecall Pro jobs':(isTicket?'Detail Bookie ticket scrape':(isDB?'Detail Bookie jobs':'Jobs export'))))));
     document.getElementById('originName').textContent=sourcePlatformName;
     const paidCents=jobsData.reduce((s,j)=>s+j.paid,0);
     showDetected(sourcePlatformName, jobsData.length, 0);
@@ -5068,6 +5335,30 @@ function processRaw(raw, filename){
       if(ws.noCustomer) bits.push(L(ws.noCustomer)+' row(s) had no customer name and were skipped');
       if(ws.noService) bits.push(L(ws.noService)+' row(s) had no service and were skipped');
       if(ws.noDate) bits.push(L(ws.noDate)+' row(s) had no readable date');
+      document.getElementById('detStats').textContent=bits.join(' \u00b7 ');
+    }
+    const jb=jobsData._jobber;
+    if(jb){
+      const L=n=>n.toLocaleString();
+      const bits=[L(jobsData.length)+' jobs from '+L(jb.rows)+' invoice(s)'];
+      bits.push(L(jb.lines)+' line(s) across '+L(jb.svcNames)+' distinct services, all landing in Imported');
+      bits.push(fmtPrice(jb.subtotalCents/100)+' of work, '+fmtPrice(jb.paidCents/100)+' recorded paid');
+      if(jb.measured) bits.push(L(jb.measured)+' line(s) are billed by count (windows, sq ft) \u2014 the count becomes the price label and is noted on the job');
+      if(jb.discounts) bits.push(L(jb.discounts)+' discount(s) totalling '+fmtPrice(jb.discountCents/100)+' carried as job discounts');
+      if(jb.taxed) bits.push(L(jb.taxed)+' taxed invoice(s), '+fmtPrice(jb.taxCents/100)+' carried as a named fee');
+      if(jb.tips) bits.push(L(jb.tips)+' tip(s) totalling '+fmtPrice(jb.tipCents/100)+' added on top');
+      if(jb.deposits) bits.push(L(jb.deposits)+' invoice(s) took a deposit first ('+fmtPrice(jb.depositCents/100)+' \u2014 noted, not a separate payment)');
+      if(jb.unpaid) bits.push(L(jb.unpaid)+' still carry a balance ('+fmtPrice(jb.unpaidCents/100)+' outstanding)');
+      if(jb.reissued) bits.push(L(jb.reissued)+' reissued invoice(s) with identical lines on the same job left out ('+fmtPrice(jb.reissuedCents/100)+' \u2014 importing them would bill the work twice)');
+      if(jb.zeroLines) bits.push(L(jb.zeroLines)+' line(s) were billed at $0.00 (bundled into a minimum charge, or comped) \u2014 kept at zero and noted on the job'+(jb.zeroJobs?(', '+L(jb.zeroJobs)+' whole invoice(s) came to nothing'):''));
+      if(jb.markate) bits.push(L(jb.markate)+' are Markate history re-invoiced in Jobber');
+      if(jb.leadSources) bits.push(L(jb.leadSources)+' lead source(s) recorded in the job notes');
+      if(jb.noState) bits.push(L(jb.noState)+' address(es) had a ZIP this tool could not place in a state');
+      if(jb.noAddr) bits.push(L(jb.noAddr)+' have no service address \u2014 imported as shop jobs');
+      if(jb.noDate) bits.push(L(jb.noDate)+' had no readable date');
+      if(jb.noName) bits.push(L(jb.noName)+' row(s) had no client name and were skipped');
+      if(jb.noLines) bits.push(L(jb.noLines)+' row(s) had no readable line items and were skipped');
+      bits.push('no vehicles in this export \u2014 each customer gets one placeholder to rename');
       document.getElementById('detStats').textContent=bits.join(' \u00b7 ');
     }
     const fd=jobsData._fieldd;
