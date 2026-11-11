@@ -2051,7 +2051,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-11-11g jobber-visits';
+const BUILD='2026-11-11h stricter-service-match';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -2646,8 +2646,23 @@ const SVC_STOP=new Set(('de del la el los las un una y o con para por en a al'
  +' the and of for with to regular tarifa desde from starting precio price'
  +' service services servicio servicios vehiculo vehicle completo complete full'
  +' suv car auto meses mes month months ano anos year years imported').split(' '));
+// Everything in brackets used to be thrown away, which made some very
+// different services identical to the scorer: Tweeked Rides' "Exterior Detail
+// (Equip 75)" - a piece of construction plant - scored a perfect 1.00 against
+// the shop's "Exterior Detail (RV)" and auto-bound to it, because both reduced
+// to "exterior detail" and both happened to cost $250. No name threshold can
+// catch that; it is not a weak match, it is a blind one.
+//
+// A bracket holding a digit is an asset or unit number - "(Unit 109)",
+// "(Equip 75)", "(UNIT 72)" - and is still ignored, because the shop writes
+// one service per unit and they really are the same work. A bracket with no
+// digit is describing the work - "(RV)", "(Full-Size)", "(wood or composite)" -
+// and now counts like any other word.
+function svcUnparen(f){
+  return String(f).replace(/\(([^)]*)\)/g,(_,inner)=>/\d/.test(inner)?' ':' '+inner+' ');
+}
 function svcCore(n){
-  let f=foldAccents(String(n)).toLowerCase().replace(/\([^)]*\)/g,' ');
+  let f=svcUnparen(foldAccents(String(n)).toLowerCase());
   // Strip the vehicle class from the WHOLE string before tokenising. Splitting
   // first turns "Mid-size" into "mid"+"size" and "Pick Up" into "pick"+"up",
   // which no single-word test recognises - so the shop's "Car Wash - Mid-size"
@@ -2672,14 +2687,17 @@ function svcStem(w){
   return x;
 }
 function svcTokens(n){
-  let f=foldAccents(String(n)).toLowerCase().replace(/\([^)]*\)/g,' ');
+  let f=svcUnparen(foldAccents(String(n)).toLowerCase());
   for(const [re] of SVC_SIZES) f=f.replace(new RegExp(re.source,'g'),' ');
   const out=new Set();
   for(const w of f.split(/[^a-z0-9+]+/)){
     if(!w) continue;
     const num=w.replace(/\+$/,'');                 // "9+" is the same tier as "9"
     if(/^\d+$/.test(num)){ out.add('#'+num); continue; }
-    if(SVC_STOP.has(w)||w.length<3) continue;
+    // Two-letter qualifiers carry real meaning in this trade - RV, HD, XL -
+    // and dropping them made "Exterior Detail (RV)" indistinguishable from
+    // "Exterior Detail (Equip 75)". Only single characters are noise.
+    if(SVC_STOP.has(w)||w.length<2) continue;
     out.add(svcStem(w));
   }
   return out;
@@ -2706,6 +2724,14 @@ function svcNameScore(A,B,idf){
   return tot?inter/tot:0;
 }
 function svcPriceScore(a,b){ if(!a||!b) return 0; return Math.min(a,b)/Math.max(a,b); }
+// How close a name has to be before the tool decides on its own, and before it
+// even pre-fills an answer for someone to accept. Both are deliberately high:
+// the cost of a missed bind is one entry in Imported that a human can map in
+// the confirmation step; the cost of a wrong bind is a job line renamed to
+// work the shop did not do, at a price it does not charge.
+const SVC_BIND_NAME=0.90;     // auto-bind with no human in the loop
+const SVC_BIND_PRICE=0.80;    // and one of the historical amounts must still be a price the shop carries
+const SVC_SUGGEST_NAME=0.90;  // pre-select a default in the confirmation dropdown
 
 function svcCoreEq(a,b){
   if(!a.size||!b.size) return false;
@@ -8236,10 +8262,24 @@ async function importJobsRun(key){
       // The export names no vehicle class but the shop prices by class, so
       // several entries tie. Picking one is a coin flip on the customer's price.
       const tie = b && !svcSize(pname) && ranked[1] && Math.abs(ranked[1].score-b.score)<0.08;
-      if(b && !tie && b.n>=0.5 && b.p>=0.80){ autoBind[pname]=b.name; structHits[pname]=b.name; continue; }
+      // The name has to nearly match, not merely overlap. At the old gate of
+      // 0.50 a two-word service that shared one word bound itself: Tweeked
+      // Rides' "Stain Removal 7 Seats" bound to the shop's "Stain Removal 5
+      // Seats" at 0.66, and "Interior Van + Carpet Extraction" bound to
+      // "Carpet Extraction Van" at 0.73. Both are different work at a
+      // different price, and a confident wrong bind is worse than an entry in
+      // Imported because nobody reviews it afterwards.
+      if(b && !tie && b.n>=SVC_BIND_NAME && b.p>=SVC_BIND_PRICE){ autoBind[pname]=b.name; structHits[pname]=b.name; continue; }
+      // What gets PRE-SELECTED in the dropdown matters as much as what binds,
+      // because a pre-filled answer is the one that gets accepted. It used to
+      // be a combined 0.7*name + 0.3*price >= 0.40, which let a price
+      // coincidence carry a name that did not match at all: "Tint Removal"
+      // came pre-selected as "Odor Removal" on a name score of 0.35 because
+      // both cost $100, and "Ceramic Paint Sealant Coupe/Sedan" as "Interior
+      // Only Coupe/Sedan" on 0.15. Only offer a default the name earns.
       needAsk.push({name:pname, count:prodUseCount[pname]||0,
                     cents:[...set].sort((a,b2)=>a-b2), ranked:ranked,
-                    preselect:(b&&!tie&&b.score>=0.40)?b.name:''});
+                    preselect:(b&&!tie&&b.n>=SVC_SUGGEST_NAME&&b.p>=0.60)?b.name:''});
     }
     if(needAsk.length){
       const picked=await confirmServiceMapping(needAsk,exStruct.map(e=>e.name));
