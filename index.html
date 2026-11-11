@@ -1160,6 +1160,22 @@ function usPhone(v){
   if(d.length===11&&d[0]==='1') d=d.slice(1);
   return d;
 }
+// usPhone returns whatever digits it found, which is the right thing for
+// matching but not for writing to a record: "1116703589" is ten digits and
+// still not a number. North American dialling requires the area code and the
+// exchange to start 2-9, so an area code of 111 cannot exist, and a shop list
+// will also carry all-same-digit placeholders and 555 numbers somebody typed
+// to get past a required field. Anything this rejects is kept verbatim in the
+// customer's notes rather than thrown away, so nothing is lost.
+function usPhoneUsable(v){
+  const d=usPhone(v);
+  if(d.length!==10) return false;
+  if(/^(\d)\1{9}$/.test(d)) return false;
+  if(!/^[2-9]/.test(d)) return false;
+  if(!/^[2-9]/.test(d.slice(3))) return false;
+  if(d.slice(3,6)==='555') return false;
+  return true;
+}
 
 // Vehicle-name normalization for cross-file matching. Different exports from
 // the same system describe one vehicle differently ("Silver Toyota Sequia"
@@ -1969,7 +1985,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-11-11d jobber-repeat-work';
+const BUILD='2026-11-11e generic-column-match';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -3097,6 +3113,124 @@ function convertQuickBooks(data){
   return ded;
 }
 
+// ─── Any list whose columns say what they are ───────────────────────────────
+// Ellie's list for Wheely Clean Mobile Detail is FIRST NAME, LAST NAME, PHONE,
+// EMAIL and nothing else - a list the shop kept by hand in Google Drive. No
+// platform wrote it, so no platform detector claimed it, and it fell through
+// to the column mapper even though a person can see the mapping at a glance.
+//
+// This is the last detector in the chain, so it can only ever claim a file
+// every specific converter has already declined. It fires on evidence rather
+// than on a format: the columns have to name themselves, and enough of them
+// have to do so that a guess isn't being made about the rest.
+const GEN_SYNONYMS={
+  first:['firstname','first','givenname','forename','fname'],
+  last:['lastname','last','surname','familyname','lname'],
+  name:['name','fullname','customername','clientname','customer','client','contactname','displayname','contact'],
+  company:['company','companyname','business','businessname','organization','organisation','employer'],
+  phone:['phone','phonenumber','phoneno','phonenum','mobile','mobilephone','mobilenumber','cell','cellphone','cellnumber','telephone','tel','primaryphone','mainphone','homephone','workphone','contactnumber'],
+  email:['email','emailaddress','emails','emailid'],
+  a1:['address','address1','addressline1','street','streetaddress','street1','addr','addr1','serviceaddress','billingaddress'],
+  a2:['address2','addressline2','street2','apt','unit','suite','apartment','aptunit'],
+  city:['city','town','suburb'],
+  state:['state','province','stateprovince','region'],
+  zip:['zip','zipcode','postalcode','postcode','zippostalcode','postal'],
+  country:['country'],
+  notes:['notes','note','comments','comment','description','remarks','details'],
+  item:['vehicle','vehicles','car','cars','item','items','equipment'],
+  status:['status','leadstatus','customerstatus','clientstatus','stage','pipelinestage'],
+  taxexempt:['taxexempt','exempt','taxexemptstatus','salestaxexempt']
+};
+// A header that means one of these columns belongs to a jobs or products
+// export, not a customer list. Those have their own drop zones, and silently
+// reading one as a customer list would be worse than saying it is unsupported.
+const GEN_NOT_CUSTOMERS=['lineitems','grandtotal','jobstatus','paymentstatus','invoiceno','invoice',
+  'subtotal','prices','price','costs','taxable','quantities','sku','category','jobno','jobs','jobid',
+  'bookingstatus','services','amountpaid','balance','duedate','issueddate','openbalance'];
+function genNorm(h){ return cl(h).toLowerCase().replace(/[^a-z0-9]/g,''); }
+// Returns {field: sourceHeader} when the header row names itself clearly
+// enough, otherwise null.
+function genericCustomerMap(headers){
+  const hs=(headers||[]).map(h=>cl(h)).filter(Boolean);
+  if(hs.length<2) return null;
+  const norm=hs.map(genNorm);
+  if(norm.some(n=>GEN_NOT_CUSTOMERS.includes(n))) return null;
+  const map={}, used=new Set();
+  for(const field of Object.keys(GEN_SYNONYMS)){
+    for(let i=0;i<hs.length;i++){
+      if(used.has(i)) continue;
+      if(GEN_SYNONYMS[field].includes(norm[i])){ map[field]=hs[i]; used.add(i); break; }
+    }
+  }
+  // A name is not optional: without one there is no customer to create.
+  const hasName=(map.first&&map.last)||map.name||map.first||map.company;
+  // Neither is a way to reach them. A list of bare names has nothing for the
+  // dedupe or the job matcher to work with and is better off going through the
+  // mapper, where a human can say what the columns are.
+  const hasContact=map.phone||map.email;
+  if(!hasName||!hasContact) return null;
+  // Recognising three columns out of thirty is not understanding the file. Be
+  // willing to claim a short list where everything is accounted for, and hand
+  // a wide one to the mapper rather than quietly dropping most of it.
+  const share=used.size/hs.length;
+  if(share<0.6) return null;
+  map._unmapped=hs.filter((h,i)=>!used.has(i));
+  return map;
+}
+function convertGenericCustomers(data, map){
+  const st={rows:0,noName:0,noContact:0,splitFullName:0,unmappedToNotes:0,
+            phones:0,badPhones:0,emails:0,withAddress:0,statuses:0,exempt:0};
+  const out=[];
+  const g=(r,f)=>map[f]?cl(r[map[f]]):'';
+  for(const r of data){
+    st.rows++;
+    let first=g(r,'first'), last=g(r,'last');
+    if(!first&&!last&&map.name){
+      const whole=g(r,'name');
+      const p=splitName(whole); first=p[0]; last=p[1];
+      if(whole) st.splitFullName++;
+    }
+    const company=g(r,'company');
+    // A company column with no personal name at all is a business record.
+    const isBiz=!first&&!last&&!!company;
+    if(isBiz){ first=company; last=''; }
+    if(!first&&!last){ st.noName++; continue; }
+
+    const rawPhone=g(r,'phone');
+    const goodPhone=usPhoneUsable(rawPhone)?usPhone(rawPhone):'';
+    if(goodPhone) st.phones++;
+    else if(rawPhone) st.badPhones++;
+    const email=cleanEmail(g(r,'email'));
+    if(email) st.emails++;
+    if(!goodPhone&&!email) st.noContact++;
+
+    const a1=g(r,'a1'), a2=g(r,'a2'), city=g(r,'city');
+    const state=abbrState(g(r,'state')), zip=g(r,'zip');
+    if(a1||city) st.withAddress++;
+    const country=g(r,'country')||countryFor(state,zip,goodPhone);
+
+    const np=[];
+    if(g(r,'notes')) np.push(g(r,'notes'));
+    if(company&&!isBiz) np.push('Company: '+company);
+    if(rawPhone&&!goodPhone) np.push('Phone in the source was "'+rawPhone+'", which is not a usable number — not imported');
+    // Columns this converter did not recognise are still the shop's data.
+    for(const h of (map._unmapped||[])){
+      const v=cl(r[h]);
+      if(v){ np.push(h+': '+v); st.unmappedToNotes++; }
+    }
+    const status=custStatus(g(r,'status'));
+    if(status) st.statuses++;
+    const exempt=custTaxExempt(g(r,'taxexempt'))?'Yes':'';
+    if(exempt) st.exempt++;
+
+    out.push([first,last,isBiz?'Business':'Person',a1,a2,city,state,zip,country,
+              goodPhone,email,np.join(' | ').slice(0,1800),g(r,'item'),status,exempt]);
+  }
+  const ded=dedup(out);
+  ded._generic=st;
+  return ded;
+}
+
 function detectPlatform(filename, headers, rawRows){
   let fn=filename.toLowerCase();
   // Already in Urable template format (e.g. cleaned by CS/Claude) → pass through
@@ -3168,6 +3302,10 @@ function detectPlatform(filename, headers, rawRows){
     if(r2.some(x=>x==='Company Name*')) return 'smfleet';
     if(r2.some(x=>x==='First Name*'||x==='Shopmonkey Customer ID (optional)')) return 'shopmonkey';
   }
+  // Last resort before "unsupported": a list whose columns name themselves.
+  // Deliberately after every specific converter, so it can only claim a file
+  // they have all declined.
+  if(genericCustomerMap(headers)) return 'generic';
   return null;
 }
 
@@ -5568,7 +5706,7 @@ function convertTekmetric(data){
 
     let phone=usPhone(r['Primary Phone']);
     // 5555555555, 0000000000 — a placeholder, not a number anyone can call.
-    if(phone&&/^(\d)\1{9}$/.test(phone)){ phone=''; fakePhone++; }
+    if(phone&&!usPhoneUsable(phone)){ phone=''; fakePhone++; }
     const email=cleanEmail(r['Email']);
     const a1=cl(r['Address Line 1']), a2=cl(r['Address Line 2']);
     const city=cl(r['City']);
@@ -5606,7 +5744,7 @@ function convertTekmetric(data){
   return rows;
 }
 
-const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template','acuity':'Acuity Scheduling','tekmetric':'Tekmetric','hcpcust':'Housecall Pro','purchased':'Bought client list','agenda':'Google Calendar + Square agenda','orbisclients':'OrbisX','simplelist':'Merged client list','qbcust':'QuickBooks customer list'};
+const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template','acuity':'Acuity Scheduling','tekmetric':'Tekmetric','hcpcust':'Housecall Pro','purchased':'Bought client list','agenda':'Google Calendar + Square agenda','orbisclients':'OrbisX','simplelist':'Merged client list','qbcust':'QuickBooks customer list','generic':'Matched by column name'};
 
 // One dispatch table, used by the single-file path and the multi-file path
 // alike — so a converter added later can't reach one and miss the other.
@@ -5635,6 +5773,13 @@ function convertCustomerRows(platform, raw, rawObjRows){
   if(platform==='hcpcust') return convertHCPCustomers(rawObjRows);
   if(platform==='purchased') return convertPurchasedList(rawObjRows);
   if(platform==='qbcust') return convertQuickBooks(rawObjRows);
+  if(platform==='generic'){
+    // Re-derive from the keys the rows are actually indexed by, so the mapping
+    // cannot drift from the data.
+    const hdrs=Object.keys(rawObjRows[0]||{});
+    const m=genericCustomerMap(hdrs);
+    return m?convertGenericCustomers(rawObjRows,m):[];
+  }
   if(platform==='urable') return dedup(rawObjRows.map(r=>HEADERS.map(h=>cl(r[h]))).filter(r=>r.some(v=>v)));
   return [];
 }
