@@ -377,7 +377,8 @@ tbody tr:last-child td{border-bottom:none}
 // ════════════════════════════════════════════════════════════════════════════
 
 const HEADERS = ['First Name','Last Name','Type','Address Line 1','Address Line 2',
-                 'City','State','Postal Code','Country','Phone Number','Email','Notes','Item'];
+                 'City','State','Postal Code','Country','Phone Number','Email','Notes','Item',
+                 'Status','Tax Exempt'];
 const PROD_HEADERS = ['Type','Category','Name','Description','Labels','Prices','Costs','Taxable','Checklist','Quantities'];
 const API_SERVERS = {
   production: 'https://app.urable.com/api',
@@ -401,6 +402,44 @@ let jobsData=[]; // rich parsed job objects for the API pipeline
 function cl(v){ return v==null?'':String(v).trim(); }
 // Names that are only punctuation ("." "-" "?") are junk — drop them
 function cleanName(v){ let n=cl(v); return /^[^A-Za-z0-9]+$/.test(n)?'':n; }
+
+// ─── Customer status ────────────────────────────────────────────────────────
+// The API enum is exactly three values and there is no "lead":
+//   status: "new" | "contacted" | "existing"      default: "new"
+// (confirmed against Urable's own OpenAPI document, CustomerInput/properties.)
+//
+// So a source that tracks leads maps onto "new". That the default is "new" and
+// not "existing" is why every import path must send this field explicitly -
+// omitting it would quietly file a shop's whole back-catalogue as new leads.
+//
+// Only an explicit stage field in the source sets this. We do NOT infer it from
+// whether a customer ever spent money: that data is missing from most exports,
+// and where it exists it misleads - QuickBooks' "Open Balance" is receivable,
+// so $0 means paid up, and reading it as "never bought" would mark a shop's
+// best customers as leads.
+const CUST_STATUS_RANK={'new':0,'contacted':1,'existing':2};
+function custStatus(v){
+  const t=cl(v).toLowerCase().replace(/[_\-]+/g,' ').replace(/\s+/g,' ').trim();
+  if(!t) return '';
+  if(CUST_STATUS_RANK[t]!==undefined) return t;
+  // Engaged but not yet a customer. Checked before the lead patterns because
+  // "attempted to contact" and "new lead - contacted" both contain "contact".
+  // "qualified" is bounded: without the \b, HubSpot's "Unqualified" - which is
+  // a dead lead - matched here and imported as contacted.
+  if(/(contact|attempted|connected|in progress|working|follow ?up|quoted|estimat|proposal|negotiat|open deal|\bqualified\b|nurtur)/.test(t)) return 'contacted';
+  // Lead-ish. Anything a shop would call a lead lands on "new".
+  if(/(^|\b)(lead|leads|new|open|prospect|prospective|inquiry|enquiry|unqualified|bad timing|cold|mql|sql)(\b|$)/.test(t)) return 'new';
+  // Converted.
+  if(/(customer|client|existing|active|won|repeat|member|current|retained)/.test(t)) return 'existing';
+  // Unrecognised vocabulary. The caller defaults to "existing" rather than
+  // guessing, because filing a paying customer as a new lead is the worse error.
+  return '';
+}
+function custTaxExempt(v){
+  const t=cl(v).toLowerCase();
+  if(!t) return false;
+  return /^(y|yes|true|t|1|exempt|tax exempt|taxexempt)$/.test(t);
+}
 
 function cleanPhone(v, keepIntl){
   let p = cl(v).replace(/^'+/,'');
@@ -631,6 +670,14 @@ function dedup(rows){
       if(!(winner[10]||'').trim()&&(loser[10]||'').trim()) winner[10]=loser[10];
       else if((winner[10]||'').trim()&&(loser[10]||'').trim()&&winner[10].toLowerCase()!==loser[10].toLowerCase()) loser[11]=mergeSeg(loser[11],'Alt email: '+loser[10]);
       winner[11]=mergeSeg(winner[11],loser[11]);
+      // Status and tax exemption are properties of the person, not of
+      // whichever row happened to be the richer one. An explicit stage beats a
+      // blank, and where two rows disagree the further-along stage wins: a
+      // customer who appears once as a lead and once as converted, converted.
+      const ws=custStatus(winner[13]), ls=custStatus(loser[13]);
+      if(ls&&(!ws||CUST_STATUS_RANK[ls]>CUST_STATUS_RANK[ws])) winner[13]=ls;
+      else if(ws) winner[13]=ws;
+      if(custTaxExempt(loser[14])) winner[14]='Yes';
       base=winner;
     }
     // The Item column merges as text above, but the structured vehicle records
@@ -1213,7 +1260,12 @@ function convertHubSpot(data){
     if(lead) np.push('Lead status: '+lead);
     if(created) np.push('Created: '+created);
     if(addlEmail) np.push('Alt email: '+addlEmail);
-    out.push([first,last,'Person','','','','','','',phone,email,np.join(' | '),'']);
+    // HubSpot portals rename these freely, so custStatus reads the vocabulary
+    // rather than matching a fixed list, and an unrecognised value falls back
+    // to existing instead of being guessed at.
+    const hsStatus=custStatus(lead);
+    if(lead&&!hsStatus) np.push('HubSpot lead status not recognised \u2014 imported as existing');
+    out.push([first,last,'Person','','','','','','',phone,email,np.join(' | '),'',hsStatus,'']);
   }
   return dedup(out);
 }
@@ -1917,7 +1969,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-11-09b jobber-invoices';
+const BUILD='2026-11-11d jobber-repeat-work';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -2820,6 +2872,231 @@ function jobsPreviewRows(jobs){
 }
 
 // ─── Platform detection ─────────────────────────────────────────────────────
+// ─── QuickBooks customer list ───────────────────────────────────────────────
+// Elite Auto Spa's list arrived as a legacy .xls with eleven columns, of which
+// two carry anything: Name on every row and Open Balance on every row. Street
+// Address is filled on FOUR rows out of 1,676. Email on nine.
+//
+// The contact details are inside the Name field, because whoever set the
+// account up typed the phone number after the name: "Zachary Smith 925 949
+// 6545", "Will Coates (925)330-9877", "Wuelfing 863 7342". 75% of the rows
+// look like that, so a converter that reads only the Phone column recovers
+// 114 numbers and a converter that splits the name on whitespace produces a
+// surname of "Smith 925 949 6545" and throws the phone away - which is what
+// convertSimpleList and convertPurchasedList both did when tested on it.
+//
+// The hard part is that a lot of these numbers have no area code. "Zach Norman
+// 401 5662" is seven digits and "Walker Ferretti 90 6342" is six. Those cannot
+// be made into a valid US phone, and inventing an area code from the shop's
+// own state would attach a working stranger's number to a customer record. So
+// they are stripped out of the name, recorded verbatim in the notes, and the
+// phone is left empty for the shop to fix.
+// Business words that appear in this list's own names. Built from an array so
+// the list stays readable and one entry can be added without touching a regex.
+const QB_BIZ_WORDS=['llc','l\\.l\\.c','inc','incorporated','corp','corporation','company',
+ 'enterprises','holdings','group','partners','properties','property','realty',
+ 'auto','autos','automotive','motors','motor','marine','boat','boats','rv','fleet',
+ 'transport','trucking','towing','glass','tire','tires','body','collision','dealership',
+ 'detailing','detail','wash','upholstery','construction','contracting','contractors',
+ 'roofing','plumbing','electric','electrical','hvac','landscaping','protection','security',
+ 'services','service','solutions','supply','supplies','rental','rentals','insurance',
+ 'bank','credit','church','school','academy','restaurant','cafe','salon','spa','gym',
+ 'fitness','hotel','center','centre','works','shop','studio','clinic','dental','medical',
+ 'associates'];
+const QB_BIZ_WORD=new RegExp('\\b(?:'+QB_BIZ_WORDS.join('|')+')\\b','i');
+// A run of digits, spaces, dots, dashes and parens - the shape a phone number
+// typed into a name takes. NOT anchored to the end: 42 of Elite's names carry
+// the number in the middle ("THD Construction 916 308 7750 Danielle Diaz",
+// "Ted Idlof cell 916 337 0917 home", "Shelvie 305 8707 Nicholas (dad) Paul"),
+// and an end-anchored pattern left every one of them in the customer's name.
+const QB_PHONE_RUN=/\(?\+?\d[\d\s\-\.\(\)]{4,}\d\)?/g;
+// Words typed around the number to label it. Removed only after a number has
+// been taken out of that name, so a customer actually called "Home" survives.
+const QB_ANNOT=/\b(?:cell|cel|mobile|mob|home|hm|work|wk|office|phone|ph|tel|telephone|fax)\b\.?/gi;
+// What is left of "Hitchcock 305 8852c" once the digits go. A lone trailing
+// letter here was part of the number's label, not an initial.
+const QB_TRAIL_LETTER=/[\s,\-]+[chwox]\.?$/i;
+// Four of Elite's names hold an email instead of, or as well as, a name:
+// "tim.lough@usaa.com", "<matthewanderson1127@gmail.com>", and
+// "Brandon 413 214 9111 jakebrandon@gmail.comJacob" - where the address runs
+// straight into the next word, so the match has to stop at the suffix rather
+// than at whitespace. Three of those are a contact this list otherwise loses.
+const QB_EMAIL_IN_NAME=/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(?:com|net|org|edu|gov|mil|us|ca|co|io|biz|info|me)/i;
+function qbDigits(s){ return String(s||'').replace(/\D/g,''); }
+// A US number is ten digits, or eleven starting with a 1. Anything shorter is
+// a local number that is missing its area code.
+function qbPhoneFrom(s){
+  let d=qbDigits(s);
+  if(d.length===11&&d[0]==='1') d=d.slice(1);
+  // Longer than ten usually means two numbers run together ("925 949 6545
+  // 408 718 3803"); the first ten are the one that was typed first.
+  if(d.length>10) d=d.slice(0,10);
+  return d.length===10?d:'';
+}
+function convertQuickBooks(data){
+  const st={rows:0,noName:0,phoneFromName:0,phoneFromColumn:0,
+            localOnly:0,noContact:0,business:0,withAddress:0,emailFromName:0,
+            withEmail:0,balances:0,balanceCents:0,mergedShells:0,mergedIntoContact:0};
+  const out=[];
+  for(const r of data){
+    st.rows++;
+    let name=cl(r['Name']);
+    if(!name){ st.noName++; continue; }
+    const company=cl(r['Company name']);
+    const colPhoneRaw=cl(r['Phone']);
+    let email=cleanEmail(r['Email']);
+    const em=QB_EMAIL_IN_NAME.exec(name);
+    if(em){
+      if(!email) email=cleanEmail(em[0]);
+      // Take it out of the name either way, so the customer isn't called
+      // "<matthewanderson1127@gmail.com>" on every invoice.
+      name=name.split(em[0]).join(' ').replace(/[<>]/g,' ').trim();
+      st.emailFromName++;
+    }
+
+    // Pull every phone-shaped run out of the name. A run of fewer than six
+    // digits is a house number or a "Shop 2" and stays put.
+    const runs=(name.match(QB_PHONE_RUN)||[]).filter(x=>qbDigits(x).length>=6);
+    // The number to keep is the first one that is actually complete; failing
+    // that, whichever has the most digits, so "305 8852" beats "906".
+    let tail='';
+    for(const x of runs){ if(qbPhoneFrom(x)){ tail=x; break; } }
+    if(!tail&&runs.length) tail=runs.slice().sort((a,b)=>qbDigits(b).length-qbDigits(a).length)[0];
+    if(runs.length){
+      for(const x of runs) name=name.split(x).join(' ');
+      name=name.replace(QB_ANNOT,' ').replace(QB_TRAIL_LETTER,'');
+    }
+    name=name.replace(/\s{2,}/g,' ').replace(/^[\s,\-]+|[\s,\-]+$/g,'').trim();
+    // Nothing left in the Name cell once the contact details came out of it.
+    // Label the record with whatever was recovered so it stays findable,
+    // preferring the email over the raw original, which may be "<a@b.com>".
+    if(!name) name=email||cl(r['Name']).replace(/[<>]/g,' ').trim()||cl(r['Name']);
+
+    // Prefer whichever source gives a complete number
+    let phone=qbPhoneFrom(tail);
+    if(phone) st.phoneFromName++;
+    if(!phone){
+      const cp=qbPhoneFrom(colPhoneRaw);
+      if(cp){ phone=cp; st.phoneFromColumn++; }
+    }
+    // What was there but unusable, kept verbatim so the shop can repair it
+    const localBits=[];
+    if(!phone){
+      if(tail&&qbDigits(tail).length>=6) localBits.push(tail);
+      if(colPhoneRaw&&qbDigits(colPhoneRaw).length>=6&&qbDigits(colPhoneRaw)!==qbDigits(tail)) localBits.push(colPhoneRaw);
+      if(localBits.length) st.localOnly++;
+    }
+    if(!phone&&!email) st.noContact++;
+
+    // Business or person.
+    //
+    // Company name repeating the Name looked like QuickBooks saying "the
+    // customer IS the company", and an earlier version of this converter
+    // treated it that way. It is wrong: QuickBooks copies an individual's name
+    // into the Company field as a matter of course. On Elite Auto Spa's list
+    // that rule classified 348 customers as businesses, of which 304 carried
+    // no business word at all and 253 were a plain Firstname Lastname -
+    // Yvonne Linney and William Lawrence among them. Labelling 253 people as
+    // businesses puts their whole name in one field and is worse than missing
+    // the occasional single-word company, so the name itself is the only
+    // evidence used.
+    const companyBare=cl(company).replace(QB_PHONE_RUN,' ').replace(QB_ANNOT,' ')
+      .replace(/\s{2,}/g,' ').replace(/^[\s,\-]+|[\s,\-]+$/g,'').trim();
+    const bizByCompany=!!companyBare&&companyBare.toLowerCase()===name.toLowerCase();
+    const isBiz=QB_BIZ_WORD.test(name);
+    if(isBiz) st.business++;
+
+    // A business keeps its whole name in the first slot: splitting "West coast
+    // boat center" into a first name of "West" and a surname of "coast boat
+    // center" is wrong on the invoice and wrong in search.
+    let first, last;
+    if(isBiz){ first=name; last=''; }
+    else { const p=splitName(name); first=p[0]; last=p[1]; }
+
+    const a1=cl(r['Street Address']), city=cl(r['City']);
+    const state=abbrState(r['State']), zip=cl(r['Zip']);
+    if(a1||city) st.withAddress++;
+    if(email) st.withEmail++;
+    const country=cl(r['Country'])||countryFor(state,zip,phone);
+
+    const bal=moneyCents(r['Open Balance']);
+    const np=[];
+    if(companyBare&&!bizByCompany) np.push('Company: '+companyBare);
+    // Verbatim, not reformatted: a seven-digit number is only useful to the
+    // shop if they can see exactly what was typed.
+    if(localBits.length) np.push('QuickBooks listed '+localBits.join(' / ')+
+      ' with no area code — not imported as a phone, needs the missing digits');
+    if(bal>0){ np.push('QuickBooks Open Balance: '+fmtPrice(bal/100)); st.balances++; st.balanceCents+=bal; }
+    else if(bal<0) np.push('QuickBooks Open Balance: '+fmtPrice(bal/100)+' (credit)');
+
+    out.push([first,last,isBiz?'Business':'Person',a1,'',city,state,zip,country,
+              phone,email,np.join(' | '),'']);
+  }
+  // Collapse rows that share a name and carry no phone or email of their own.
+  //
+  // This is what makes a names-only import of this list re-run safe. The
+  // import's matcher falls back to a bare name ONLY when neither side has
+  // anything better AND the name is unique in the account - so 1,553 of these
+  // 1,670 match themselves on a second run and are skipped, but 117 share a
+  // name with another record and get created again every time. Running every
+  // import twice is the retry mechanism, so that is 117 duplicates by design,
+  // growing with each run.
+  //
+  // The evidence says these are one customer typed twice, not two people:
+  // "Walker Ferretti" carries 906 6342 on one row and 90 6342 on the other,
+  // "Sigrid Nikolei" carries 888 8623 on both, and most pairs are one row with
+  // a local number and a balance beside one row with nothing at all.
+  //
+  // A row that HAS a phone or email is never merged away - it is already
+  // matchable, and two people really can share a name. Everything each row
+  // carried is concatenated onto the survivor, so no balance and no local
+  // number is lost, and the survivor records how many rows it came from.
+  const nameKey=row=>cl((row[0]||'')+' '+(row[1]||'')).toLowerCase().replace(/\s+/g,' ');
+  const firstShell={}, order=[];
+  for(const row of out){
+    const nm=nameKey(row);
+    if(!nm||row[9]||row[10]){ order.push(row); continue; }
+    if(!firstShell[nm]){ firstShell[nm]=row; order.push(row); continue; }
+    const keep=firstShell[nm];
+    const bits=String(keep[11]||'').split(' | ').filter(Boolean);
+    for(const b of String(row[11]||'').split(' | ')) if(b&&!bits.includes(b)) bits.push(b);
+    keep[11]=bits.join(' | ');
+    keep._merged=(keep._merged||1)+1;
+    st.mergedShells++;
+  }
+  // Then fold a surviving shell into a same-named row that does have contact
+  // detail, so the shell stops being a permanent duplicate.
+  const contactByName={};
+  for(const row of order){
+    const nm=nameKey(row);
+    if(nm&&(row[9]||row[10])&&!contactByName[nm]) contactByName[nm]=row;
+  }
+  const final=[];
+  for(const row of order){
+    const host=(!row[9]&&!row[10])&&contactByName[nameKey(row)];
+    if(host&&host!==row){
+      const bits=String(host[11]||'').split(' | ').filter(Boolean);
+      for(const b of String(row[11]||'').split(' | ')) if(b&&!bits.includes(b)) bits.push(b);
+      host[11]=bits.join(' | ');
+      host._merged=(host._merged||1)+1;
+      st.mergedIntoContact++;
+      continue;
+    }
+    final.push(row);
+  }
+  for(const row of final){
+    if(row._merged>1){
+      const bits=String(row[11]||'').split(' | ').filter(Boolean);
+      bits.push('Combined '+row._merged+' QuickBooks rows with this same name \u2014 separate them if they are different customers');
+      row[11]=bits.join(' | ');
+    }
+    delete row._merged;
+  }
+  const ded=dedup(final);
+  ded._qb=st;
+  return ded;
+}
+
 function detectPlatform(filename, headers, rawRows){
   let fn=filename.toLowerCase();
   // Already in Urable template format (e.g. cleaned by CS/Claude) → pass through
@@ -2867,6 +3144,11 @@ function detectPlatform(filename, headers, rawRows){
   if(fn.includes('tekmetric')) return 'tekmetric';
   // Housecall Pro customer export: four address blocks and its own flags
   if(h.includes('address_1 street line 1')&&(h.includes('customer is contractor')||h.includes('lifetime value'))) return 'hcpcust';
+  // QuickBooks customer list. Name + Open Balance are the only columns it
+  // reliably fills, and Attachments is a QuickBooks-only artifact. Placed
+  // ahead of the looser name/address rules below so they cannot claim it.
+  if(hl[0]==='name'&&h.includes('open balance')&&
+     (h.includes('attachments')||h.includes('company name'))) return 'qbcust';
   // A bought client list: a name, one contact column, a rough address
   if(h.includes('name')&&h.includes('address')&&(h.includes('contact method')||h.includes('contact'))
      &&(h.includes('cost')||h.includes('average cost per job')||h.includes('ceramic coat client'))) return 'purchased';
@@ -4020,6 +4302,157 @@ function convertJobsWorksheet(data){
 // booked - 150 of 174 in that same shop. Those become quote-status jobs so the
 // shop keeps its open pipeline and the people attached to it.
 
+// ─── Detail Pilot bookings ──────────────────────────────────────────────────
+// Bubba's Detailing books through Detail Pilot, whose export is nine columns:
+// ID, Customer, Email, Date, Time, Services, Booking status, Payment status,
+// Price. One booking per row, one service per booking, one price - no line
+// splitting, no tax, no tip, no discount. The simplest jobs file the tool
+// reads.
+//
+// What it uniquely carries is a real DURATION. "10:00 AM - 12:45 PM" is a
+// range, so unlike every other converter here this one does not have to guess
+// how long the work took or default the end to the start.
+//
+// What it carries nothing of is contact detail: there is no phone column and
+// no address column at all. Every customer arrives on an email alone, and
+// three of Bubba's 38 have not even that. Nothing in the file says where the
+// work happened either, so these are shop jobs - a field job with no address
+// is refused by Urable outright.
+function dpKind(headerRow){
+  const h=(headerRow||[]).map(x=>cl(x).toLowerCase());
+  const has=n=>h.includes(n);
+  if(!has('booking status')||!has('payment status')) return '';
+  if(!has('services')&&!has('service')) return '';
+  if(!has('price')) return '';
+  if(!has('customer')) return '';
+  return 'bookings';
+}
+const DP_STATUS={'completed':'completed','complete':'completed','done':'completed',
+  'confirmed':'scheduled','pending':'scheduled','scheduled':'scheduled','booked':'scheduled',
+  'cancelled':'canceled','canceled':'canceled','no show':'canceled','no-show':'canceled',
+  'declined':'canceled','rejected':'canceled'};
+const DP_PAID_FULL=/^(paid|complete|completed|settled)$/i;
+const DP_PAID_PART=/^(partial|partially paid|deposit|part)$/i;
+// "10:00 AM - 12:45 PM" / "10:06 AM - 11:21 AM". Both halves are needed: the
+// first is when the job started, the second is what makes the duration real.
+function dpWhen(dateStr, timeStr){
+  const d=/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/.exec(cl(dateStr));
+  if(!d) return {start:null,end:null};
+  let y=parseInt(d[3],10); if(y<100) y+=2000;
+  const mo=parseInt(d[1],10)-1, da=parseInt(d[2],10);
+  const t=cl(timeStr).split(/\s*[-–—]\s*/);
+  const at=i=>{
+    const m=/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(cl(t[i]||''));
+    if(!m) return null;
+    let hh=parseInt(m[1],10); const mi=m[2]?parseInt(m[2],10):0;
+    if(m[3]){ const pm=/pm/i.test(m[3]); if(pm&&hh<12) hh+=12; if(!pm&&hh===12) hh=0; }
+    const ts=new Date(y,mo,da,hh,mi).getTime();
+    return isNaN(ts)?null:ts;
+  };
+  let start=at(0), end=t.length>1?at(1):null;
+  // "5:30 PM - 8:15 PM" is fine, but a range that crosses midnight would come
+  // back with the end before the start. Push it to the next day rather than
+  // handing Urable a negative duration.
+  if(start&&end&&end<start) end+=24*3600*1000;
+  return {start:start, end:end||start};
+}
+function convertDetailPilot(data){
+  const st={rows:0,noCustomer:0,noService:0,noDate:0,
+            durations:0,durationMins:0,
+            completed:0,scheduled:0,cancelled:0,futureDated:0,staleConfirmed:0,
+            paidFull:0,partial:0,partialJobs:0,unpaid:0,
+            noEmail:0,zeroMoney:0,svcNames:0,
+            subtotalCents:0,paidCents:0};
+  const seen={};
+  const jobs=[];
+  const now=Date.now();
+  for(const r of data){
+    st.rows++;
+    const name=cl(r['Customer']);
+    if(!name){ st.noCustomer++; continue; }
+    const svc=cl(r['Services'])||cl(r['Service']);
+    if(!svc){ st.noService++; continue; }
+    if(!seen[svc]){ seen[svc]=1; st.svcNames++; }
+
+    // "$291.5" - a dollar sign and sometimes one decimal place.
+    const cents=moneyCents(r['Price']);
+    if(!cents) st.zeroMoney++;
+    st.subtotalCents+=cents;
+
+    const when=dpWhen(r['Date'], r['Time']);
+    if(!when.start) st.noDate++;
+    if(when.start&&when.end&&when.end>when.start){
+      st.durations++; st.durationMins+=Math.round((when.end-when.start)/60000);
+    }
+
+    const rawBook=cl(r['Booking status']);
+    const rawPay=cl(r['Payment status']);
+    let status=rawBook?(DP_STATUS[rawBook.toLowerCase()]||'completed'):'completed';
+    // Detail Pilot leaves a booking "confirmed" until someone closes it out.
+    // Two of Bubba's sit a few days in the past that way. The same rule the
+    // jobs worksheet uses applies: work whose date has passed happened. Unlike
+    // the worksheet, though, it is NOT assumed paid - this file has a payment
+    // column of its own and that column is the authority.
+    let stale=false;
+    if(status==='scheduled'&&when.start&&when.start<=now){
+      status='completed'; stale=true; st.staleConfirmed++;
+    } else if(status==='scheduled'){ st.futureDated++; }
+    if(status==='completed') st.completed++;
+    else if(status==='scheduled') st.scheduled++;
+    if(status==='canceled') st.cancelled++;
+
+    // Payment. "paid" settles it in full. "partial" says money was taken but
+    // the export carries no figure for it, and POST /v1/payments has no
+    // delete - so a guessed deposit cannot be taken back off. Recording zero
+    // leaves the shop a payment to add; recording a guess leaves them a
+    // payment they cannot remove. Zero, and say so on the job.
+    let paid=0;
+    if(status==='canceled') paid=0;
+    else if(DP_PAID_FULL.test(rawPay)){ paid=cents; st.paidFull++; }
+    else if(DP_PAID_PART.test(rawPay)){ paid=0; st.partial++; st.partialJobs++; }
+    else st.unpaid++;
+    st.paidCents+=paid;
+
+    const email=cleanEmail(r['Email']);
+    if(!email) st.noEmail++;
+    const p=splitName(name);
+
+    const np=[];
+    if(cl(r['ID'])) np.push('Detail Pilot booking '+cl(r['ID']));
+    if(when.start&&when.end&&when.end>when.start)
+      np.push('Booked '+cl(r['Time'])+' ('+Math.round((when.end-when.start)/60000)+' min)');
+    if(DP_PAID_PART.test(rawPay))
+      np.push('Detail Pilot recorded a PARTIAL payment, and the export carries no amount for it — imported unpaid, add what was actually collected');
+    if(stale) np.push('Detail Pilot still said "'+rawBook+'" but the date had passed — imported as completed');
+    if(rawBook&&rawPay) np.push('Detail Pilot status: '+rawBook+' / '+rawPay);
+
+    jobs.push({
+      num:'', srcRef:cl(r['ID']),
+      status:status,
+      // No address column exists in this export, so there is nowhere to send a
+      // mobile crew. Shop jobs, and the shop can move them if they were mobile.
+      type:'shop',
+      title:svc,
+      customer:{ name:name, email:email, phone:'',
+        a1:'',a2:'',city:'',state:'',zip:'',country:'' },
+      vehicles:[], vehiclesRaw:'', vins:[], plates:[],
+      itemType:'automotive',
+      completedAt:(status==='completed')?(when.end||when.start):null,
+      updatedAt:when.start,
+      lineItems:[svc], lineCents:[cents], lineCats:['Imported'], lineSizes:[''],
+      subtotal:cents,
+      perLineCents:cents, firstLineCents:cents,
+      adjustments:[],
+      start:when.start, end:when.end, dropOff:when.start, allDay:false,
+      taxed:false,
+      notes:np.join(' | ').slice(0,1900),
+      total:cents, paid:paid
+    });
+  }
+  jobs._detailpilot=st;
+  return jobs;
+}
+
 // ─── Jobber invoices ────────────────────────────────────────────────────────
 // Hot Shot Wash n Rescue runs windows, pressure washing, gutters AND auto
 // detailing out of Jobber, and the only export available is the invoice
@@ -4110,10 +4543,17 @@ function convertJobberInvoices(data){
             deposits:0,depositCents:0,unpaid:0,unpaidCents:0,
             noDate:0,noAddr:0,noState:0,reissued:0,reissuedCents:0,zeroLines:0,zeroJobs:0,
             subtotalCents:0,paidCents:0,svcNames:0,leadSources:0,markate:0};
-  // Two of Hot Shot's job numbers carry two invoices each, with the SAME line
-  // items on both - a reissue, not split billing. Importing both would create
-  // two jobs and bill the customer twice. Where the lines differ the two
-  // invoices are genuinely different work and both are kept.
+  // Two invoices against one job number can be either a reissue of the same
+  // bill or a returning customer having the same service done again, and the
+  // DATE is what separates them. Hot Shot's two cases are both the second
+  // kind: job 202600137 was invoiced on 26 Sep and again on 9 Oct, job
+  // 202600149 on 25 Sep and 8 Oct - thirteen days apart, each paid on its own
+  // date. A detailing customer gets repeat work, so identical line items are
+  // no evidence of anything on their own.
+  //
+  // An earlier version compared only the job number and the line items, and
+  // dropped $193.25 of real jobs. Only a same-day, same-lines pair is treated
+  // as one invoice issued twice.
   const byJob={};
   for(const r of data){
     const ref=cl(r['Job #s']); if(!ref) continue;
@@ -4124,7 +4564,9 @@ function convertJobberInvoices(data){
     const group=byJob[ref]; if(group.length<2) continue;
     const seen={};
     for(const r of group){
-      const sig=cl(r['Line items']);
+      // The issued date is part of the signature: two invoices only collapse
+      // when they bill the same work on the same day.
+      const sig=cl(r['Line items'])+'\u0000'+cl(r['Issued date']);
       (seen[sig]=seen[sig]||[]).push(r);
     }
     for(const sig of Object.keys(seen)){
@@ -4245,7 +4687,7 @@ function convertJobberInvoices(data){
     if(paidAt&&paidAt!==start) np.push('Marked paid '+new Date(paidAt).toLocaleDateString());
     if(lead) np.push('Lead source: '+lead);
     if(reissueNote[inv]) np.push('Jobber also held invoice #'+reissueNote[inv].join(', #')+
-      ' for this same job with identical line items — not imported, it would have billed the work twice');
+      ' for this same job, same day, with identical line items — not imported, it would have billed the work twice');
     // Say it on the job when the file's own arithmetic does not close, rather
     // than silently importing a number nobody can trace.
     if(preTax&&subtotal-disc!==preTax)
@@ -4658,7 +5100,8 @@ function convertOrbisClients(data){
     if(cl(r['Primary User Assigned'])) np.push('Assigned to: '+orbText(r['Primary User Assigned']));
     // A row with a Lead ID and no Client ID never became a customer in OrbisX.
     // It still belongs in the list — the shop quoted them — but say which.
-    if(!cl(r['Client ID'])&&cl(r['Lead ID'])){ np.push('OrbisX lead, never converted'); leads++; }
+    let orbStatus='';
+    if(!cl(r['Client ID'])&&cl(r['Lead ID'])){ np.push('OrbisX lead, never converted'); leads++; orbStatus='new'; }
     if(cl(r['Date Added'])) np.push('Customer since '+cl(r['Date Added']).slice(0,10));
     // Half of OrbisX's zips carry a second number ("78730  357"), its states
     // mix "TX" and "Texas", and one row has a zip in the state column. And
@@ -4673,7 +5116,7 @@ function convertOrbisClients(data){
     }
     out.push([nm1,nm2,type,a1,'',city,state,zip,
       countryFor(state,zip,cl(r['Country'])),usPhone(r['Phone']),cleanEmail(r['Email']),
-      np.join(' | ').slice(0,1800),veh]);
+      np.join(' | ').slice(0,1800),veh,orbStatus,'']);
   }
   const rows=dedup(out);
   rows._orbis={biz,withVeh,unsub,leads};
@@ -5150,19 +5593,20 @@ function convertTekmetric(data){
     if(cf||clast) np.push('Contact: '+(cf+' '+clast).trim());
     const lead=cl(r['Lead Source']); if(lead) np.push('Lead Source: '+lead);
     const bday=cl(r['Birthday']);    if(bday) np.push('Birthday: '+bday);
-    if(cl(r['Tax Exempt']).toLowerCase()==='yes') np.push('Tax exempt');
+    const tkExempt=custTaxExempt(r['Tax Exempt'])?'Yes':'';
+    if(tkExempt) np.push('Tax exempt');
     const note=cl(straightenQuotes(r['Notes'])); if(note) np.push(note);
     const cid=cl(r['CustomerId']);   if(cid) np.push('Tekmetric ID: '+cid);
 
     out.push([first,last,ctype,a1,a2,city,st,zip,countryFor(st,zip,phone),
-              phone,email,np.join(' | ').slice(0,1800),'']);
+              phone,email,np.join(' | ').slice(0,1800),'','',tkExempt]);
   }
   const rows=dedup(out);
   rows._tek={dropped,biz,fakePhone,noContact};
   return rows;
 }
 
-const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template','acuity':'Acuity Scheduling','tekmetric':'Tekmetric','hcpcust':'Housecall Pro','purchased':'Bought client list','agenda':'Google Calendar + Square agenda','orbisclients':'OrbisX','simplelist':'Merged client list'};
+const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template','acuity':'Acuity Scheduling','tekmetric':'Tekmetric','hcpcust':'Housecall Pro','purchased':'Bought client list','agenda':'Google Calendar + Square agenda','orbisclients':'OrbisX','simplelist':'Merged client list','qbcust':'QuickBooks customer list'};
 
 // One dispatch table, used by the single-file path and the multi-file path
 // alike — so a converter added later can't reach one and miss the other.
@@ -5190,6 +5634,7 @@ function convertCustomerRows(platform, raw, rawObjRows){
   if(platform==='simplelist') return convertSimpleList(rawObjRows);
   if(platform==='hcpcust') return convertHCPCustomers(rawObjRows);
   if(platform==='purchased') return convertPurchasedList(rawObjRows);
+  if(platform==='qbcust') return convertQuickBooks(rawObjRows);
   if(platform==='urable') return dedup(rawObjRows.map(r=>HEADERS.map(h=>cl(r[h]))).filter(r=>r.some(v=>v)));
   return [];
 }
@@ -5262,7 +5707,9 @@ function processRaw(raw, filename){
     // Jobber's invoice report. No jobs file exists for it, so the invoice is
     // the job: one row, one customer, one service address, one set of lines.
     const isJobber=!!jbInvKind(headerRow);
-    const isWorksheet=!isFieldd&&!isUrable&&!isHCP&&!isDB&&!isTicket&&!isAgenda&&!isJobber&&!!jwKind(headerRow);
+    // Detail Pilot bookings export: booking + payment status, one service, one price.
+    const isDP=!isJobber&&!!dpKind(headerRow);
+    const isWorksheet=!isFieldd&&!isUrable&&!isHCP&&!isDB&&!isTicket&&!isAgenda&&!isJobber&&!isDP&&!!jwKind(headerRow);
     // One OrbisX file on its own still works, with less in it: invoices alone
     // have no appointment times, the calendar alone has no line-item prices.
     const fk=fdInvKind(headerRow);
@@ -5293,14 +5740,14 @@ function processRaw(raw, filename){
       showError('That is the Fieldd card-payments report. It holds no services, so it cannot make jobs \u2014 drop it together with the Fieldd jobs export (and the invoices and quotes if you have them). It can only say what was collected on jobs that are in the same drop.');
       return;
     }
-    if(!isUrable&&!isDB&&!isTicket&&!isHCP&&!isAgenda&&!isFieldd&&!isWorksheet&&!isJobber){
+    if(!isUrable&&!isDB&&!isTicket&&!isHCP&&!isAgenda&&!isFieldd&&!isWorksheet&&!isJobber&&!isDP){
       // The recurring-series half of an agenda export has the same detail
       // column but no times, so say what it is rather than calling it unknown.
       if(hl.includes('detalle_original')&&hl.includes('proxima_cita_pr')){
         showError('That is the recurring-series file on its own. It has no appointment times, so it cannot make jobs \u2014 drop it together with the appointments file (Agenda_Square_..._citas).');
         return;
       }
-      showError('This does not look like a supported jobs export. Supported: Urable jobs export, Housecall Pro jobs export, Google Calendar + Square agenda (appointments + series together), Detail Bookie all-jobs export, Detail Bookie ticket scrape, OrbisX (invoices + calendar events + payments), Fieldd (jobs + invoices + quotes + card payments), Jobber invoice report, and a hand-built jobs worksheet (First/Last Name, Vehicle, Service, Date, Start Time, Price or Deposit Paid + Balance Due). Send the file to Josh to get the format added.');
+      showError('This does not look like a supported jobs export. Supported: Urable jobs export, Housecall Pro jobs export, Google Calendar + Square agenda (appointments + series together), Detail Bookie all-jobs export, Detail Bookie ticket scrape, OrbisX (invoices + calendar events + payments), Fieldd (jobs + invoices + quotes + card payments), Jobber invoice report, Detail Pilot bookings export, and a hand-built jobs worksheet (First/Last Name, Vehicle, Service, Date, Start Time, Price or Deposit Paid + Balance Due). Send the file to Josh to get the format added.');
       return;
     }
     rawObjRows=raw.slice(1).map(r=>{let o={};headerRow.forEach((h,i)=>{o[cl(h)]=r[i]||'';});return o;})
@@ -5309,11 +5756,11 @@ function processRaw(raw, filename){
       showError('This jobs export has no Line Items / amount columns, so jobs can\'t be recreated from it. You can still drop it in the customers box to extract the customer list.');
       return;
     }
-    jobsData=isJobber?convertJobberInvoices(rawObjRows):(isWorksheet?convertJobsWorksheet(rawObjRows):(isFieldd?convertFielddJobs(rawObjRows):(isAgenda?convertAgendaJobs(rawObjRows):(isHCP?convertHCPJobs(rawObjRows):(isTicket?convertDBTickets(rawObjRows):(isDB?convertDetailBookieJobs(rawObjRows):parseJobsExport(rawObjRows)))))));
+    jobsData=isDP?convertDetailPilot(rawObjRows):(isJobber?convertJobberInvoices(rawObjRows):(isWorksheet?convertJobsWorksheet(rawObjRows):(isFieldd?convertFielddJobs(rawObjRows):(isAgenda?convertAgendaJobs(rawObjRows):(isHCP?convertHCPJobs(rawObjRows):(isTicket?convertDBTickets(rawObjRows):(isDB?convertDetailBookieJobs(rawObjRows):parseJobsExport(rawObjRows))))))));
     if(!jobsData.length){ showError('No jobs found in this file.'); return; }
     currentKind='jobs';
     convertedRows=jobsPreviewRows(jobsData);
-    sourcePlatformName=isJobber?'Jobber invoices':(isWorksheet?'Jobs worksheet':(isFieldd?'Fieldd jobs':(isAgenda?'Google Calendar + Square agenda':(isHCP?'Housecall Pro jobs':(isTicket?'Detail Bookie ticket scrape':(isDB?'Detail Bookie jobs':'Jobs export'))))));
+    sourcePlatformName=isDP?'Detail Pilot bookings':(isJobber?'Jobber invoices':(isWorksheet?'Jobs worksheet':(isFieldd?'Fieldd jobs':(isAgenda?'Google Calendar + Square agenda':(isHCP?'Housecall Pro jobs':(isTicket?'Detail Bookie ticket scrape':(isDB?'Detail Bookie jobs':'Jobs export')))))));
     document.getElementById('originName').textContent=sourcePlatformName;
     const paidCents=jobsData.reduce((s,j)=>s+j.paid,0);
     showDetected(sourcePlatformName, jobsData.length, 0);
@@ -5335,6 +5782,27 @@ function processRaw(raw, filename){
       if(ws.noCustomer) bits.push(L(ws.noCustomer)+' row(s) had no customer name and were skipped');
       if(ws.noService) bits.push(L(ws.noService)+' row(s) had no service and were skipped');
       if(ws.noDate) bits.push(L(ws.noDate)+' row(s) had no readable date');
+      document.getElementById('detStats').textContent=bits.join(' \u00b7 ');
+    }
+    const dp=jobsData._detailpilot;
+    if(dp){
+      const L=n=>n.toLocaleString();
+      const bits=[L(jobsData.length)+' jobs from '+L(dp.rows)+' booking(s)'];
+      bits.push(L(dp.svcNames)+' distinct services, all landing in Imported');
+      bits.push(fmtPrice(dp.subtotalCents/100)+' of work, '+fmtPrice(dp.paidCents/100)+' recorded paid');
+      if(dp.durations) bits.push(L(dp.durations)+' carry a real start and end time (avg '+Math.round(dp.durationMins/dp.durations)+' min) \u2014 this export gives durations, so none are guessed');
+      if(dp.paidFull) bits.push(L(dp.paidFull)+' paid in full');
+      if(dp.partialJobs) bits.push(L(dp.partialJobs)+' marked PARTIAL with no amount in the export \u2014 imported UNPAID, add what was collected (a guessed deposit cannot be removed afterwards)');
+      if(dp.unpaid) bits.push(L(dp.unpaid)+' with no payment recorded');
+      if(dp.staleConfirmed) bits.push(L(dp.staleConfirmed)+' still said confirmed but the date had passed \u2014 imported as completed, payment left as the export states it');
+      if(dp.futureDated) bits.push(L(dp.futureDated)+' dated ahead \u2014 imported as scheduled');
+      if(dp.cancelled) bits.push(L(dp.cancelled)+' cancelled');
+      if(dp.zeroMoney) bits.push(L(dp.zeroMoney)+' carried no price \u2014 imported at zero');
+      if(dp.noEmail) bits.push(L(dp.noEmail)+' have no email, and this export has no phone or address column at all \u2014 those customers arrive on a name alone');
+      if(dp.noDate) bits.push(L(dp.noDate)+' had no readable date');
+      if(dp.noCustomer) bits.push(L(dp.noCustomer)+' row(s) had no customer and were skipped');
+      bits.push('no address column \u2014 imported as shop jobs');
+      bits.push('no vehicles in this export \u2014 each customer gets one placeholder to rename');
       document.getElementById('detStats').textContent=bits.join(' \u00b7 ');
     }
     const jb=jobsData._jobber;
@@ -5793,10 +6261,13 @@ function inferISO(state,zip,phone){
 }
 
 function rowToCustomerPayload(row, origin){
-  const [first,last,type,a1,a2,city,state,zip,country,phone,email,notes]=row;
+  const [first,last,type,a1,a2,city,state,zip,country,phone,email,notes,item,status,taxExempt]=row;
   const p={ firstName: first||last||'Customer',
             type: type==='Business'?'business':'person',
-            status:'existing' };
+            // Explicit source stage if we could read one, otherwise existing.
+            // Never the API's own default of "new".
+            status: custStatus(status)||'existing' };
+  if(custTaxExempt(taxExempt)) p.taxExempt=true;
   if(first&&last) p.lastName=last;
   if(email) p.emails=[{label:'Main', value:email}];
   if(phone){
