@@ -435,6 +435,23 @@ function custStatus(v){
   // guessing, because filing a paying customer as a new lead is the worse error.
   return '';
 }
+// Some shops export their leads and their customers as two files and put the
+// distinction in the FILENAME, not in a column - On The Spot sends
+// "On The Spot - Leads.csv" and "On The Spot - Existing Customers.csv" with no
+// status field in either. Read it off the name, and only ever to say "these
+// are leads": defaulting to existing is already the rule everywhere else, so
+// nothing has to be inferred for the ordinary case.
+//
+// This fills the Status column only where a row does not already carry one, so
+// an export that names a stage per row always wins over the filename.
+function custStatusFromFilename(fn){
+  // Underscores and dots are WORD characters to a regex, so "\blead\b" never
+  // matched "On_The_Spot_-_Leads.csv". Turn every separator into a space first.
+  const f=String(fn||'').toLowerCase().replace(/\.[a-z0-9]+$/,'').replace(/[^a-z]+/g,' ');
+  if(/\b(lead|leads|prospect|prospects|enquir\w*|inquir\w*|unconverted)\b/.test(f)) return 'new';
+  if(/\b(contacted|followup|follow-up)\b/.test(f)) return 'contacted';
+  return '';
+}
 function custTaxExempt(v){
   const t=cl(v).toLowerCase();
   if(!t) return false;
@@ -671,12 +688,19 @@ function dedup(rows){
       else if((winner[10]||'').trim()&&(loser[10]||'').trim()&&winner[10].toLowerCase()!==loser[10].toLowerCase()) loser[11]=mergeSeg(loser[11],'Alt email: '+loser[10]);
       winner[11]=mergeSeg(winner[11],loser[11]);
       // Status and tax exemption are properties of the person, not of
-      // whichever row happened to be the richer one. An explicit stage beats a
-      // blank, and where two rows disagree the further-along stage wins: a
-      // customer who appears once as a lead and once as converted, converted.
-      const ws=custStatus(winner[13]), ls=custStatus(loser[13]);
-      if(ls&&(!ws||CUST_STATUS_RANK[ls]>CUST_STATUS_RANK[ws])) winner[13]=ls;
-      else if(ws) winner[13]=ws;
+      // whichever row happened to be the richer one, and where two rows
+      // disagree the further-along stage wins: somebody who is in a leads file
+      // AND a customer file is a customer.
+      //
+      // A blank Status is not "no opinion", it is "an ordinary customer" -
+      // existing is the default everywhere else. Comparing the raw strings
+      // meant a "new" row merged with a blank row stayed new, which on On The
+      // Spot's two files left 814 of the 817 people who appear in both marked
+      // as leads. Compare the EFFECTIVE status, and write the column back only
+      // when the answer is not the default.
+      const wsE=custStatus(winner[13])||'existing', lsE=custStatus(loser[13])||'existing';
+      const bestS=(CUST_STATUS_RANK[lsE]>CUST_STATUS_RANK[wsE])?lsE:wsE;
+      winner[13]=(bestS==='existing')?'':bestS;
       if(custTaxExempt(loser[14])) winner[14]='Yes';
       base=winner;
     }
@@ -1639,7 +1663,15 @@ function processMixedCustomerFiles(parts){
     catch(err){ orbisClientLoc=''; skipped.push(p.name+' ('+err.message+')'); continue; }
     orbisClientLoc='';
     if(!rows.length){ skipped.push(p.name+' (no records)'); continue; }
-    used.push({name:p.name, platform, count:rows.length});
+    // Tag this file's rows before they are merged with the others. dedup
+    // prefers the further-along stage, so somebody who appears in both the
+    // leads file and the customers file ends up existing, whichever order the
+    // files were dropped in - which matters here: 853 of On The Spot's emails
+    // are in both.
+    const fnStatus=custStatusFromFilename(p.name);
+    let tagged=0;
+    if(fnStatus) for(const r of rows){ if(!custStatus(r[13])){ r[13]=fnStatus; tagged++; } }
+    used.push({name:p.name, platform, count:rows.length, status:fnStatus, tagged:tagged});
     for(const r of rows) all.push(r);
   }
   if(!all.length){
@@ -1657,6 +1689,7 @@ function processMixedCustomerFiles(parts){
   }
   const before=all.length;
   const merged=dedup(all);
+  const demoted=demoteLeadsWhoAreCustomers(merged);
   currentKind='customers';
   convertedRows=merged;
   currentFilename=parts.concat(vehParts).map(p=>p.name).join(' + ');
@@ -1673,6 +1706,17 @@ function processMixedCustomerFiles(parts){
     if(vehSt.replacedJunk) bits.push(L(vehSt.replacedJunk)+' client row(s) had a mileage reading or bare year in Vehicles \u2014 replaced with the real vehicle');
     if(vehSt.unmatched.length) bits.push(vehSt.unmatched.length+' vehicle owner(s) are not in the client list and were left out'+
       (vehSt.unmatched.length<=4?(': '+vehSt.unmatched.join(', ')):''));
+  }
+  const tagged=used.filter(u=>u.status);
+  if(tagged.length){
+    const L=n=>n.toLocaleString();
+    for(const u of tagged) bits.push(u.name+' is named as leads \u2014 '+L(u.tagged)+' row(s) imported with status "'+u.status+'" (Urable has no "lead"; new is its equivalent)');
+    const byStatus={};
+    for(const r of merged){ const k=custStatus(r[13])||'existing'; byStatus[k]=(byStatus[k]||0)+1; }
+    bits.push('after merging: '+Object.keys(byStatus).sort().map(k=>L(byStatus[k])+' '+k).join(', '));
+    const promoted=before-merged.length;
+    if(promoted) bits.push(L(promoted)+' record(s) appeared in more than one file and were merged \u2014 anyone who is in both a leads file and a customer file ends up existing');
+    if(demoted) bits.push(L(demoted)+' more were on a customer record under a slightly different name \u2014 kept as separate records to review, but imported as existing rather than as leads');
   }
   if(skipped.length) bits.push('NOT read: '+skipped.join(', '));
   showDetected(names.join(' + '), merged.length, Math.max(0,before-merged.length), bits.join(' \u00b7 '));
@@ -2051,7 +2095,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-11-11h stricter-service-match';
+const BUILD='2026-11-12a lead-status-from-filename';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -3221,6 +3265,8 @@ const GEN_SYNONYMS={
   name:['name','fullname','customername','clientname','customer','client','contactname','displayname','contact'],
   company:['company','companyname','business','businessname','organization','organisation','employer'],
   phone:['phone','phonenumber','phoneno','phonenum','mobile','mobilephone','mobilenumber','cell','cellphone','cellnumber','telephone','tel','primaryphone','mainphone','homephone','workphone','contactnumber'],
+  phone2:['mobilenumber','mobilephone','mobile','secondaryphone','altphone','alternatephone','phone2','homephone','workphone'],
+  email2:['secondaryemail','altemail','alternateemail','email2','billingemail','otheremail'],
   email:['email','emailaddress','emails','emailid'],
   a1:['address','address1','addressline1','street','streetaddress','street1','addr','addr1','serviceaddress','billingaddress'],
   a2:['address2','addressline2','street2','apt','unit','suite','apartment','aptunit'],
@@ -3236,6 +3282,15 @@ const GEN_SYNONYMS={
 // A header that means one of these columns belongs to a jobs or products
 // export, not a customer list. Those have their own drop zones, and silently
 // reading one as a customer list would be worse than saying it is unsupported.
+// Prose, not a person.
+//
+// The first version of this tested for any full stop followed by a space, and
+// it threw away real customers: "Haruna N. Dantata", "Carlos E. Esquivel",
+// "A.J. Battle", "K.C. Davis", "W. Evans". A middle initial is a period after
+// ONE letter; the end of a sentence is a period after a whole word. Requiring
+// three lowercase letters before it keeps initials, "Jr." and "ST." safe while
+// still catching "...Hedgestone Advisors. I'm Mando".
+const GEN_NOT_A_NAME=/[?!]|[a-z]{3}\.\s|\S+(\s+\S+){7,}/;
 const GEN_NOT_CUSTOMERS=['lineitems','grandtotal','jobstatus','paymentstatus','invoiceno','invoice',
   'subtotal','prices','price','costs','taxable','quantities','sku','category','jobno','jobs','jobid',
   'bookingstatus','services','amountpaid','balance','duedate','issueddate','openbalance'];
@@ -3261,16 +3316,20 @@ function genericCustomerMap(headers){
   // mapper, where a human can say what the columns are.
   const hasContact=map.phone||map.email;
   if(!hasName||!hasContact) return null;
-  // Recognising three columns out of thirty is not understanding the file. Be
-  // willing to claim a short list where everything is accounted for, and hand
-  // a wide one to the mapper rather than quietly dropping most of it.
+  // Recognising three columns out of thirty is not understanding the file. But
+  // a share test alone turned away two lists that were perfectly legible: On
+  // The Spot's leads export maps 5 of 11 columns and its customer export 11 of
+  // 24, and in both cases the five that matter - name, phone, email, address -
+  // were all among them. Unrecognised columns go to the notes, so the risk is
+  // mis-mapping, not under-mapping. Claim it when either the essentials are
+  // comfortably covered, or the file is short enough to be fully accounted for.
   const share=used.size/hs.length;
-  if(share<0.6) return null;
+  if(used.size<4&&share<0.6) return null;
   map._unmapped=hs.filter((h,i)=>!used.has(i));
   return map;
 }
 function convertGenericCustomers(data, map){
-  const st={rows:0,noName:0,noContact:0,splitFullName:0,unmappedToNotes:0,
+  const st={rows:0,noName:0,junkName:0,noContact:0,splitFullName:0,unmappedToNotes:0,
             phones:0,badPhones:0,emails:0,withAddress:0,statuses:0,exempt:0};
   const out=[];
   const g=(r,f)=>map[f]?cl(r[map[f]]):'';
@@ -3287,6 +3346,11 @@ function convertGenericCustomers(data, map){
     const isBiz=!first&&!last&&!!company;
     if(isBiz){ first=company; last=''; }
     if(!first&&!last){ st.noName++; continue; }
+    // A lead inbox collects cold sales emails, and an unescaped comma in one
+    // spills its body across the columns: On The Spot's leads file has a row
+    // whose "first name" is " or you'd just like to know what your business is
+    // worth in today's market". A name is short and is not a sentence.
+    if(GEN_NOT_A_NAME.test(first+' '+last)||(first+' '+last).length>60){ st.junkName++; continue; }
 
     const rawPhone=g(r,'phone');
     const goodPhone=usPhoneUsable(rawPhone)?usPhone(rawPhone):'';
@@ -3304,6 +3368,11 @@ function convertGenericCustomers(data, map){
     const np=[];
     if(g(r,'notes')) np.push(g(r,'notes'));
     if(company&&!isBiz) np.push('Company: '+company);
+    // A second number or address belongs on the record, not in the bin.
+    const p2=g(r,'phone2');
+    if(p2&&usPhoneUsable(p2)&&usPhone(p2)!==goodPhone) np.push('Alt phone: '+usPhone(p2));
+    const e2=cleanEmail(g(r,'email2'));
+    if(e2&&e2.toLowerCase()!==String(email).toLowerCase()) np.push('Alt email: '+e2);
     if(rawPhone&&!goodPhone) np.push('Phone in the source was "'+rawPhone+'", which is not a usable number — not imported');
     // Columns this converter did not recognise are still the shop's data.
     for(const h of (map._unmapped||[])){
@@ -6061,6 +6130,46 @@ function convertCustomerRows(platform, raw, rawObjRows){
   if(platform==='urable') return dedup(rawObjRows.map(r=>HEADERS.map(h=>cl(r[h]))).filter(r=>r.some(v=>v)));
   return [];
 }
+// Fill the Status column from the filename for rows that do not carry one.
+// Used by the single-file path; the multi-file path tags per file before it
+// merges, so that a person in two files gets the further-along stage.
+// After the merge, somebody can still hold TWO records: dedup refuses to join
+// two rows whose names disagree on one identifier, because households share a
+// phone and that guard has earned its place. But "Patricia A Simpson" in the
+// leads file and "Patricia Simpson" in the customers file, on one email
+// address, is one person - and leaving the first marked as a lead is the error
+// Josh would see in the UI.
+//
+// So without merging anything, stop calling somebody a lead when the same
+// EMAIL also sits on a customer record. Email only: two people really do share
+// a phone, and far less often an inbox. The duplicate pair stays for a human
+// to look at, and is already cross-noted.
+function demoteLeadsWhoAreCustomers(rows){
+  const customerEmails=new Set();
+  for(const r of rows){
+    const em=cl(r[10]).toLowerCase();
+    if(em&&(custStatus(r[13])||'existing')==='existing') customerEmails.add(em);
+  }
+  let n=0;
+  for(const r of rows){
+    const st=custStatus(r[13]);
+    if(!st||st==='existing') continue;
+    const em=cl(r[10]).toLowerCase();
+    if(em&&customerEmails.has(em)){
+      r[13]='';
+      r[11]=[r[11],'This email is also on a customer record, so imported as an existing customer rather than a lead'].filter(Boolean).join(' | ');
+      n++;
+    }
+  }
+  return n;
+}
+function applyFilenameStatus(rows, filename){
+  const st=custStatusFromFilename(filename);
+  if(!st||!rows||!rows.length) return 0;
+  let n=0;
+  for(const r of rows){ if(!custStatus(r[13])){ r[13]=st; n++; } }
+  return n;
+}
 // header row + header-keyed rows, the shape every converter expects
 // Fieldd renamed its export columns around Oct 2026: Date & Time -> Time,
 // Line Items -> Service, Grand Total -> Total, Worker -> Team on jobs; Line
@@ -6403,6 +6512,8 @@ function processRaw(raw, filename){
 
   if(!rows.length){ showError('No records found in this file.'); return; }
 
+  const fnTagged=applyFilenameStatus(rows, filename);
+
   currentKind='customers';
   convertedRows=rows;
   let dupes=dupesBefore>0?Math.max(0,dupesBefore-rows.length):0;
@@ -6410,6 +6521,13 @@ function processRaw(raw, filename){
   sourcePlatformName=names[platform];
   document.getElementById('originName').textContent=sourcePlatformName;
   const extra=[];
+  if(fnTagged){
+    const st=custStatusFromFilename(filename);
+    extra.push('the filename says these are leads \u2014 '+fnTagged.toLocaleString()+' imported with status "'+st+
+      '"'+(st==='new'?' (Urable has no "lead"; new is its equivalent)':'')+
+      '. If any of them are already customers, drop that file in the same go and they will come out existing.');
+  }
+  if(rows._generic&&rows._generic.junkName) extra.push(rows._generic.junkName+' row(s) had prose where a name should be \u2014 cold sales emails pasted into the list \u2014 and were skipped');
   if(rows._crossNoted) extra.push(rows._crossNoted+' pair'+(rows._crossNoted===1?'':'s')+' share a phone or email under different names \u2014 kept separate, review in Urable');
   if(rows._acuity){
     const a=rows._acuity;
