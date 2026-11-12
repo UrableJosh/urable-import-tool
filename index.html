@@ -225,7 +225,7 @@ tbody tr:last-child td{border-bottom:none}
       <p class="sub">Import straight into your Urable account &mdash; customers <em>and</em> their vehicles. You'll need an API key: in the Urable app go to <strong>Settings &rarr; Developer &rarr; API Keys &rarr; Create API key</strong> (admin account required; grant <code>customers:write</code> and <code>items:write</code> scopes), then paste it here.</p>
       <div class="api-row">
         <input type="password" id="apiKey" placeholder="Paste your Urable API key" autocomplete="off">
-        <select id="apiEnv" style="padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff">
+        <select id="apiEnv" onchange="syncProbeBtn()" style="padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff">
           <option value="production">Production</option>
           <option value="dev">Dev server</option>
         </select>
@@ -236,6 +236,7 @@ tbody tr:last-child td{border-bottom:none}
           <option value="other">Other</option>
         </select>
         <button class="btn secondary" onclick="testConnection()" id="testBtn">Test connection</button>
+        <button class="btn secondary" onclick="probeStatus()" id="probeBtn" style="display:none" title="Create a few throwaway customers on the dev server to find out which status values the API really stores">Probe status values</button>
       </div>
       <div id="jobsWarning" class="warn-box" style="display:none">
         <strong>Before you start a jobs import</strong>
@@ -388,6 +389,106 @@ function apiBase(){
   const sel=document.getElementById('apiEnv');
   return API_SERVERS[sel?sel.value:'production'];
 }
+function isDevServer(){
+  const sel=document.getElementById('apiEnv');
+  return !!sel&&sel.value==='dev';
+}
+
+// ─── Status probe (dev server only) ─────────────────────────────────────────
+// The published schema says CustomerInput.status is new | contacted | existing.
+// We were told "lead" is accepted anyway. Being accepted is not the same as
+// being stored, and being stored is not the same as being usable: an
+// unvalidated string field would accept anything and the app's status filter
+// would know none of it.
+//
+// So the probe writes each candidate AND a deliberate nonsense control, then
+// reads every record back and reports what the server actually kept:
+//
+//   nonsense rejected, "lead" stored as "lead"  -> real supported value
+//   nonsense rejected, "lead" comes back "new"  -> silently coerced
+//   nonsense stored too                          -> field is free text, and
+//                                                   "accepted" means nothing
+//
+// Throwaway records on a dev account, named so they sort together and are
+// obvious to a human. Nothing is deleted without being asked for.
+const PROBE_PREFIX='ZZProbe';
+let _probeCreated=[];
+async function probeStatus(){
+  const key=document.getElementById('apiKey').value.trim();
+  if(!key){ alert('Paste your API key first.'); return; }
+  if(!isDevServer()){ alert('The status probe creates throwaway customer records, so it only runs against the dev server. Switch the environment selector to "Dev server" first.'); return; }
+  const btn=document.getElementById('probeBtn');
+  const log=document.getElementById('importLog');
+  log.style.display='block';
+  btn.disabled=true; btn.textContent='Probing\u2026';
+  _probeCreated=[];
+  const stamp=String(Date.now()).slice(-6);
+  // The control value must be something no sane enum would hold.
+  const CASES=[
+    {label:'lead',           status:'lead',          note:'the value Kyle says is accepted'},
+    {label:'new',            status:'new',           note:'documented, and the schema default'},
+    {label:'contacted',      status:'contacted',     note:'documented'},
+    {label:'existing',       status:'existing',      note:'documented'},
+    {label:'(nonsense)',     status:'zzznotastatus', note:'CONTROL \u2014 if this is kept, the field is not validated'},
+    {label:'(omitted)',      status:null,            note:'CONTROL \u2014 what the server defaults to'}
+  ];
+  logLine('Status probe against the DEV server. '+CASES.length+' throwaway customers named '+PROBE_PREFIX+'-\u2026-'+stamp+', each written then read back. Paced, so allow about a minute.');
+  const results=[];
+  for(let i=0;i<CASES.length;i++){
+    const c=CASES[i];
+    const body={ firstName:PROBE_PREFIX+'-'+c.label.replace(/[^a-z]/gi,'')||PROBE_PREFIX, lastName:stamp, industry:selectedIndustry() };
+    if(c.status!==null) body.status=c.status;
+    const w=await apiFetch('/v1/customers',{method:'POST',body:JSON.stringify(body)},key);
+    const id=w.ok&&w.body&&w.body.data&&w.body.data.id;
+    if(!w.ok){
+      results.push({...c,create:'HTTP '+w.status,stored:'\u2014',err:(w.body&&w.body.error)||''});
+      logLine('  '+c.label.padEnd(12)+' write REJECTED \u2014 HTTP '+w.status+(w.body&&w.body.error?' ('+(typeof w.body.error==='string'?w.body.error:JSON.stringify(w.body.error))+')':''));
+      continue;
+    }
+    _probeCreated.push(id);
+    // Read it back - the only way to see what was really kept.
+    const r=await apiFetch('/v1/customers/'+encodeURIComponent(id),{method:'GET'},key);
+    const got=r.ok&&r.body&&r.body.data?r.body.data:null;
+    const stored=got&&('status' in got)?String(got.status):'(field absent)';
+    results.push({...c,create:'HTTP '+w.status,stored,id});
+    logLine('  '+c.label.padEnd(12)+' written \u2192 read back as '+JSON.stringify(stored));
+  }
+  // ── verdict ──
+  const lead=results.find(r=>r.label==='lead');
+  const ctrl=results.find(r=>r.label==='(nonsense)');
+  let verdict;
+  const ctrlKept=ctrl&&ctrl.stored==='zzznotastatus';
+  if(!lead||/HTTP (4|5)/.test(lead.create)) verdict='"lead" was REJECTED on write. Map leads to "new".';
+  else if(lead.stored!=='lead') verdict='"lead" was accepted but silently stored as '+JSON.stringify(lead.stored)+'. Nothing is gained by sending it \u2014 map leads to "new".';
+  else if(ctrlKept) verdict='"lead" is stored, BUT so is deliberate nonsense \u2014 the field is not validated, so the API keeping "lead" says nothing about the app understanding it. Check the dev UI\u2019s status filter before relying on it.';
+  else verdict='"lead" is stored verbatim and nonsense is rejected \u2014 it is a real supported value. Safe to map leads to "lead". Still worth eyeballing one record in the dev UI\u2019s status filter.';
+  let html='<table class="svc-map-tbl"><tr><th>sent</th><th>write</th><th>read back as</th><th></th></tr>';
+  for(const r of results) html+='<tr><td><code>'+escHtml(r.status===null?'(omitted)':r.status)+'</code></td><td>'+escHtml(r.create)+'</td><td><code>'+escHtml(r.stored)+'</code></td><td style="color:#57606a">'+r.note+'</td></tr>';
+  html+='</table><p><strong>'+verdict+'</strong></p>';
+  if(_probeCreated.length) html+='<p>'+_probeCreated.length+' throwaway customer'+(_probeCreated.length===1?'':'s')+' created on dev, all named <code>'+escHtml(PROBE_PREFIX)+'-\u2026-'+stamp+'</code>. <button class="btn-link" onclick="probeCleanup()">Delete them</button> \u2014 or leave them and remove them yourself.</p>';
+  document.getElementById('summaryBox').innerHTML=html;
+  document.getElementById('summaryBox').style.display='block';
+  logLine(verdict);
+  btn.disabled=false; btn.textContent='Probe status values';
+}
+// The probe writes records, so it stays hidden unless the dev server is selected.
+function syncProbeBtn(){
+  const b=document.getElementById('probeBtn');
+  if(b) b.style.display=isDevServer()?'':'none';
+}
+async function probeCleanup(){
+  const key=document.getElementById('apiKey').value.trim();
+  if(!key||!_probeCreated.length) return;
+  if(!isDevServer()){ alert('Not the dev server \u2014 refusing to delete.'); return; }
+  logLine('Deleting '+_probeCreated.length+' probe records\u2026');
+  let gone=0,left=[];
+  for(const id of _probeCreated){
+    const r=await apiFetch('/v1/customers/'+encodeURIComponent(id),{method:'DELETE'},key);
+    if(r.ok) gone++; else { left.push(id); logLine('  could not delete '+id+' \u2014 HTTP '+r.status); }
+  }
+  _probeCreated=left;
+  logLine(gone+' probe record'+(gone===1?'':'s')+' deleted'+(left.length?'; '+left.length+' still there':'')+'.');
+}
 const INDUSTRIES=['vehicleCare','lawnCare','flatGlass','other'];
 function selectedIndustry(){
   const el=document.getElementById('apiIndustry');
@@ -444,6 +545,19 @@ function custStatus(v){
 //
 // This fills the Status column only where a row does not already carry one, so
 // an export that names a stage per row always wins over the filename.
+// The origin lands on the customer record and the shop reads it. Several of
+// the names in CUSTOMER_PLATFORM_NAMES describe how the tool RECOGNISED the
+// file, not what system it came from - "Matched by column name" is the
+// detection method, and "Imported from Matched by column name" is nonsense on
+// a customer record. When the source system is unknown, say "Imported" and
+// nothing more.
+const ORIGIN_NOT_A_PLATFORM=new Set(['Matched by column name','Merged client list',
+  'Customer export','Jobs export','Bought client list','Urable template',
+  'Urable customer export','previous systems']);
+function originLabel(){
+  const n=cl(sourcePlatformName);
+  return (!n||ORIGIN_NOT_A_PLATFORM.has(n))?'Imported':('Imported from '+n);
+}
 function custStatusFromFilename(fn){
   // Underscores and dots are WORD characters to a regex, so "\blead\b" never
   // matched "On_The_Spot_-_Leads.csv". Turn every separator into a space first.
@@ -2095,7 +2209,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-11-12a lead-status-from-filename';
+const BUILD='2026-11-12c status-probe';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -6551,6 +6665,12 @@ function setImportModeUI(){
   const isCust=currentKind==='customers';
   document.getElementById('createVehicles').parentElement.style.display=isCust?'flex':'none';
   document.getElementById('tagOrigin').parentElement.style.display=isCust?'flex':'none';
+  // Show the string that will really be written, not a template with the
+  // detection method dropped into it.
+  try{
+    const lab=document.querySelector('label[for="tagOrigin"]');
+    if(lab) lab.innerHTML='Tag each customer\u2019s origin as \u201c'+escHtml(originLabel())+'\u201d';
+  }catch(e){}
   // Jobs can't go through the CSV path — hide that tab; show catalog choice
   document.getElementById('tabCsv').style.display=currentKind==='jobs'?'none':'';
 }
@@ -6880,6 +7000,8 @@ function rowToProductPayload(row){
 // timed-out write is NOT retried — the server may have applied it, and a
 // duplicate job is worse than a reported failure. Re-running the file heals it.
 const API_TIMEOUT_MS=60000;
+
+
 let _jobWatchdog=null;   // run-level stall watchdog; declared here so it is
                          // initialised long before importJobsRun can touch it
 async function apiFetch(path, opts, key, _attempt){
@@ -6897,7 +7019,13 @@ async function apiFetch(path, opts, key, _attempt){
     const timedOut=e&&e.name==='AbortError';
     // reads are safe to retry; writes are not
     if(isRead&&(_attempt||0)<2){ await new Promise(r=>setTimeout(r,2000)); return apiFetch(path,opts,key,(_attempt||0)+1); }
-    return { ok:false, status:0, body:{ error: timedOut?('timed out after '+(API_TIMEOUT_MS/1000)+'s — re-run the file to finish this record'):('network error: '+((e&&e.message)||'unknown')) } };
+    // "Failed to fetch" is the browser's one message for every reason a
+    // request never completed, and on its own it sends people hunting their
+    // wifi. Name the likely cause instead.
+    const raw=(e&&e.message)||'unknown';
+    return { ok:false, status:0, body:{ error: timedOut
+      ? ('timed out after '+(API_TIMEOUT_MS/1000)+'s — re-run the file to finish this record')
+      : ('connection to the server dropped ('+raw+') — not saved; re-run the file to finish this record') } };
   }
   clearTimeout(timer);
   if(res.status===429){
@@ -7078,7 +7206,7 @@ async function migFetch(base,path,opts,key,readOnly){
       await new Promise(r=>setTimeout(r,2000));
       return migFetch(base,path,{...opts,_try:((opts&&opts._try)||0)+1},key,readOnly);
     }
-    return {ok:false,status:0,body:{error:timedOut?'timed out after 60s':'network error: '+((e&&e.message)||'unknown')}};
+    return {ok:false,status:0,body:{error:timedOut?'timed out after 60s':'connection to the server dropped ('+((e&&e.message)||'unknown')+') \u2014 not saved'}};
   }
   clearTimeout(timer);
   if(res.status===429){
@@ -9128,7 +9256,7 @@ async function startImport(){
   const isProd=currentKind==='products';
   const doVehicles=!isProd&&document.getElementById('createVehicles').checked;
   const doOrigin=!isProd&&document.getElementById('tagOrigin').checked;
-  const origin=doOrigin?('Imported from '+sourcePlatformName):'';
+  const origin=doOrigin?originLabel():'';
   const btn=document.getElementById('importBtn');
   btn.disabled=true; btn.textContent='Importing…';
   document.getElementById('progressWrap').style.display='block';
@@ -9441,6 +9569,7 @@ for(const [id,kind] of [['dropZone','customers'],['dropZoneP','products'],['drop
 
 document.addEventListener('DOMContentLoaded',()=>{
   const el=document.getElementById('buildStamp'); if(el) el.textContent=BUILD;
+  try{ syncProbeBtn(); }catch(e){}
 });
 </script>
 </body>
