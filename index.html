@@ -518,7 +518,17 @@ function cleanName(v){ let n=cl(v); return /^[^A-Za-z0-9]+$/.test(n)?'':n; }
 // and where it exists it misleads - QuickBooks' "Open Balance" is receivable,
 // so $0 means paid up, and reading it as "never bought" would mark a shop's
 // best customers as leads.
-const CUST_STATUS_RANK={'new':0,'contacted':1,'existing':2};
+// "lead" is absent from the published schema, whose enum is new | contacted |
+// existing. Probed against dev on 2026-11-12: the field IS validated - a
+// nonsense value is rejected with HTTP 400 "status must be either new,
+// contacted, or existing" - and yet "lead" writes with HTTP 200 and reads
+// back verbatim. So it is a real allowed value and that error string is
+// simply stale. Confirmed by Kyle before testing.
+//
+// Coldest first. The dedup merge keeps the warmest of two statuses, so a
+// record that is a lead in one file and a customer in another imports as the
+// customer: filing a paying customer as a lead is the worse error.
+const CUST_STATUS_RANK={'lead':0,'new':1,'contacted':2,'existing':3};
 function custStatus(v){
   const t=cl(v).toLowerCase().replace(/[_\-]+/g,' ').replace(/\s+/g,' ').trim();
   if(!t) return '';
@@ -528,8 +538,10 @@ function custStatus(v){
   // "qualified" is bounded: without the \b, HubSpot's "Unqualified" - which is
   // a dead lead - matched here and imported as contacted.
   if(/(contact|attempted|connected|in progress|working|follow ?up|quoted|estimat|proposal|negotiat|open deal|\bqualified\b|nurtur)/.test(t)) return 'contacted';
-  // Lead-ish. Anything a shop would call a lead lands on "new".
-  if(/(^|\b)(lead|leads|new|open|prospect|prospective|inquiry|enquiry|unqualified|bad timing|cold|mql|sql)(\b|$)/.test(t)) return 'new';
+  // Lead-ish. A bare "new" never reaches here - it is matched as itself by the
+  // rank lookup above - so this is composite vocabulary like "new lead",
+  // "cold prospect", "unqualified", which is a lead proper.
+  if(/(^|\b)(lead|leads|new|open|prospect|prospective|inquiry|enquiry|unqualified|bad timing|cold|mql|sql)(\b|$)/.test(t)) return 'lead';
   // Converted.
   if(/(customer|client|existing|active|won|repeat|member|current|retained)/.test(t)) return 'existing';
   // Unrecognised vocabulary. The caller defaults to "existing" rather than
@@ -562,7 +574,7 @@ function custStatusFromFilename(fn){
   // Underscores and dots are WORD characters to a regex, so "\blead\b" never
   // matched "On_The_Spot_-_Leads.csv". Turn every separator into a space first.
   const f=String(fn||'').toLowerCase().replace(/\.[a-z0-9]+$/,'').replace(/[^a-z]+/g,' ');
-  if(/\b(lead|leads|prospect|prospects|enquir\w*|inquir\w*|unconverted)\b/.test(f)) return 'new';
+  if(/\b(lead|leads|prospect|prospects|enquir\w*|inquir\w*|unconverted)\b/.test(f)) return 'lead';
   if(/\b(contacted|followup|follow-up)\b/.test(f)) return 'contacted';
   return '';
 }
@@ -2209,7 +2221,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-11-12c status-probe';
+const BUILD='2026-11-12d lead-status';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -6272,6 +6284,8 @@ function demoteLeadsWhoAreCustomers(rows){
     if(em&&customerEmails.has(em)){
       r[13]='';
       r[11]=[r[11],'This email is also on a customer record, so imported as an existing customer rather than a lead'].filter(Boolean).join(' | ');
+      // (blank means "ordinary customer" - rowToCustomerPayload turns it into
+      // "existing", never the API's own default of "new".)
       n++;
     }
   }
