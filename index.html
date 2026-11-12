@@ -743,9 +743,23 @@ function dedup(rows){
   const NAME_JUNK=/^(-+|\.+|n\/?a|none|null|unknown)$/i;
   const normName=r=>((r[0]||'')+' '+(r[1]||'')).trim().toLowerCase().replace(/\s+/g,' ')
     .split(' ').filter(w=>w&&!NAME_JUNK.test(w)).join(' ');
+  // Two records that agree on BOTH identifiers are one person however the
+  // names are spelled. A household shares a phone OR an email - essentially
+  // never both - so this waives the name guard without merging families.
+  // On The Spot: 45 groups caught this way (Joe/Joseph Conway, Jacky/Jacqueline
+  // Barch, Mogan/Morgan Dean, Thomas/Tom/Thomas Cromer Madison), while the 8
+  // genuine households there share an email but differ on phone and are left
+  // alone.
+  function bothIdsAgree(i,j){
+    const pa=(rows[i][9]||'').replace(/\D/g,''), pb=(rows[j][9]||'').replace(/\D/g,'');
+    if(!pa||pa!==pb) return false;
+    const ea=(rows[i][10]||'').trim().toLowerCase(), eb=(rows[j][10]||'').trim().toLowerCase();
+    return !!ea&&ea===eb;
+  }
   function compatible(i,j){
     const a=normName(rows[i]), b=normName(rows[j]);
-    return !a||!b||a===b;
+    if(!a||!b||a===b) return true;
+    return bothIdsAgree(i,j);
   }
   const crossNoted=new Set();
   function guardedUnion(i,j,idKind){
@@ -1814,7 +1828,8 @@ function processMixedCustomerFiles(parts){
     catch(err){ skipped.push(vehParts.map(p=>p.name).join(', ')+' ('+err.message+')'); }
   }
   const before=all.length;
-  const merged=dedup(all);
+  const tst=dropTestRecords(all);
+  const merged=dedup(tst.keep);
   const demoted=demoteLeadsWhoAreCustomers(merged);
   currentKind='customers';
   convertedRows=merged;
@@ -2221,7 +2236,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-11-12d lead-status';
+const BUILD='2026-11-12e lead-status + dup-merge';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -6270,6 +6285,27 @@ function convertCustomerRows(platform, raw, rawObjRows){
 // EMAIL also sits on a customer record. Email only: two people really do share
 // a phone, and far less often an inbox. The duplicate pair stays for a human
 // to look at, and is already cross-noted.
+// Obvious test records a shop left in its CRM. Deliberately narrow: the NAME
+// must look like a test AND the contact details must corroborate it, because
+// "Test" is a real surname and a lone junk-looking name is not enough to
+// delete somebody. Returns the rows to keep plus what was dropped, so the
+// caller can show the operator exactly what went.
+const TEST_NAME=/^(test|testing|tester|asdf|asdfg|qwerty|a{3,}|x{3,}|zzz+|sample|demo|delete ?me|no ?name)\b/i;
+const TEST_EMAIL=/^(test|testing|asdf|qwerty|noone|nobody|none|noneya|fake|example|donotreply|no ?reply)[^@]*@|@(test|example|xyz)\./i;
+function dropTestRecords(rows){
+  const dropped=[];
+  const keep=rows.filter(r=>{
+    const name=((r[0]||'')+' '+(r[1]||'')).trim();
+    if(!TEST_NAME.test(name)) return true;
+    const em=(r[10]||'').trim(), ph=(r[9]||'').replace(/\D/g,'');
+    // corroboration: a test-looking email, or no way to contact them at all
+    const corroborated=(em&&TEST_EMAIL.test(em))||(!em&&!ph);
+    if(!corroborated) return true;
+    dropped.push(name+(em?' <'+em+'>':''));
+    return false;
+  });
+  return {keep, dropped};
+}
 function demoteLeadsWhoAreCustomers(rows){
   const customerEmails=new Set();
   for(const r of rows){
