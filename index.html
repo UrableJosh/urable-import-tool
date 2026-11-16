@@ -1378,6 +1378,209 @@ function abbrState(v){
   if(/^[A-Za-z]{2}$/.test(st)) return st.toUpperCase();
   return STATE_ABBR[st.toLowerCase()]||st;
 }
+// ═══════════════════════════════════════════════════════════════════════════
+// Wix contacts export
+//
+// A Wix site export: "First Name, Last Name, Email 1, Phone 1, Phone 2,
+// Address 1 - Type/Street/City/State/Zip/Country, Address 2 - ..., Labels,
+// Created At, Email subscriber status, SMS subscriber status, Last Activity,
+// Source, Language, Linked Locations, Vehicles".
+//
+// Wix emits a numbered address block per contact and only includes the
+// columns that hold a value SOMEWHERE in the file, so the blocks are ragged -
+// Address 2 may have no Street column at all while Address 3 does. Never
+// index these by position; always look them up by name.
+//
+// There is no status column, so every record imports as an ordinary customer
+// (blank -> "existing"). The file does carry activity history, but the
+// standing rule on this project is that a list without a status column is a
+// customer list, not a lead list.
+// ═══════════════════════════════════════════════════════════════════════════
+function wixKind(headerRow){
+  const h=(headerRow||[]).map(x=>cl(x).toLowerCase());
+  const j='|'+h.join('|')+'|';
+  if(!j.includes('|email 1|')) return null;
+  // The numbered address block and the subscriber columns are what make this
+  // Wix rather than any other export with an "Email 1" column.
+  if(!/\|address 1 - /.test(j)&&!j.includes('|email subscriber status|')) return null;
+  return 'contacts';
+}
+
+// Wix writes "'+1 865-806-8063": a leading apostrophe (Excel's text guard),
+// then +1 and dashes. Some are bare 10-digit. A couple are truncated to 8
+// digits - those are not phone numbers and are kept in the notes instead of
+// being imported as if they could be dialled.
+function wixPhone(v){
+  const raw=cl(v).replace(/^'+/,'');
+  if(!raw) return {phone:'',bad:''};
+  let d=raw.replace(/\D/g,'');
+  if(d.length===11&&d[0]==='1') d=d.slice(1);
+  if(d.length===10&&usPhoneUsable(d)) return {phone:d,bad:''};
+  return {phone:'',bad:raw};
+}
+
+// splitLooseAddress is tuned to one Colorado shop's city list, so it cannot
+// read a Tennessee address. This one works for any US state.
+//
+// It is deliberately conservative: when the city cannot be identified with
+// confidence the words stay in the street line. A street that is slightly
+// long is harmless; a wrong city is not.
+const WIX_ST_SUFFIX=/^(rd|road|dr|drive|ln|lane|st|street|ave|avenue|way|cir|circle|cove|ct|court|blvd|boulevard|pike|point|pointe|trail|trl|path|pl|place|parkway|pkwy|fwy|freeway|gardens|glen|hills|heights|ridge|run|row|terrace|ter|loop|bend|park|square|sq|hwy|highway)$/i;
+function splitUSAddress(v){
+  let s=cl(v).replace(/\s+/g,' ').trim();
+  if(!s) return ['','','',''];
+  s=s.replace(/[,\s]+(united states|usa|u\.s\.a\.|us)\s*$/i,'').trim();
+  // Wix sometimes writes a semicolon where the form expected a comma.
+  s=s.replace(/;/g,',');
+  let zip='',state='';
+  // The leading (^|...) matters: a Wix billing husk can be the bare string
+  // "Tennessee 37996", and without it that whole field survived as a street.
+  // Keep the +4 when it is there: the dedicated Zip column passes ZIP+4
+  // through, so the loose parse must agree with it.
+  let m=s.match(/(?:^|[,\s])(\d{5}(?:-\d{4})?)\s*$/);
+  if(m){ zip=m[1]; s=s.slice(0,m.index).trim(); }
+  m=s.match(/(?:^|[,\s])([A-Za-z]{2})\s*$/);
+  if(m&&US_STATES.has(m[1].toUpperCase())){ state=m[1].toUpperCase(); s=s.slice(0,m.index).trim(); }
+  else {
+    m=s.match(/(?:^|[,\s])([A-Za-z]{4,})\s*$/);
+    if(m&&STATE_ABBR[m[1].toLowerCase()]){ state=STATE_ABBR[m[1].toLowerCase()]; s=s.slice(0,m.index).trim(); }
+  }
+  s=s.replace(/[,\s]+$/,'').trim();
+  let city='';
+  // An explicit comma is the one unambiguous signal Wix gives us.
+  const cm=s.match(/^(.*),\s*([A-Za-z][A-Za-z .'-]{1,29})$/);
+  if(cm){ s=cm[1].replace(/[,\s]+$/,'').trim(); city=cm[2].trim(); }
+  else {
+    // No comma: a city only counts when a street suffix sits immediately
+    // before it, so "Windjammer Lane Knoxville" splits but "2040 Sutherland
+    // Knoxville" - where either word could be the city - is left alone.
+    const w=s.split(' ');
+    for(const take of [2,1]){
+      if(w.length<take+2) continue;
+      const cand=w.slice(w.length-take).join(' ');
+      const before=w[w.length-take-1]||'';
+      // No word of the candidate may itself be a street suffix, or
+      // "733 Emory Heights Rd Harriman" yields the city "Rd Harriman".
+      const clean=cand.split(' ').every(t=>/^[A-Za-z][A-Za-z.'-]*$/.test(t)&&!WIX_ST_SUFFIX.test(t));
+      if(clean&&WIX_ST_SUFFIX.test(before)){
+        city=cand; s=w.slice(0,w.length-take).join(' '); break;
+      }
+    }
+  }
+  return [s.replace(/[,\s]+$/,'').trim(),city,state,zip];
+}
+
+// Address 1 is the primary. Blocks 2-6 are mostly empty husks left by Wix
+// checkout - a Type and nothing else - so they are a fallback only when the
+// primary has no street. Linked Locations is the last resort.
+function wixAddress(r){
+  const pick=i=>({
+    street:cl(r['Address '+i+' - Street']),
+    city:  cl(r['Address '+i+' - City']),
+    state: abbrState(cl(r['Address '+i+' - State/Region'])),
+    zip:   cl(r['Address '+i+' - Zip'])
+  });
+  let a=null;
+  for(const i of [1,2,3,4,5,6]){
+    const c=pick(i);
+    // An email in the street field is a form-fill mistake, not an address.
+    if(c.street&&/@/.test(c.street)) c.street='';
+    // Wix sometimes stores the whole formatted address, newlines and all.
+    if(c.street&&/\n/.test(c.street)){
+      const parts=c.street.split(/\n+/).map(x=>cl(x)).filter(Boolean);
+      c.street=parts[0]||'';
+    }
+    if(c.street){ a=c; break; }
+    if(!a&&(c.city||c.zip)) a=c;
+  }
+  if(!a||!a.street){
+    const linked=cl(r['Linked Locations']);
+    if(linked){ const [st,ci,stt,zp]=splitUSAddress(linked); a={street:st,city:ci,state:stt,zip:zp}; }
+  }
+  if(!a) return ['','','',''];
+  // The street usually carries the city/state/zip too; only trust the
+  // dedicated columns where the loose parse found nothing.
+  const [st,ci,stt,zp]=splitUSAddress(a.street);
+  return [st, ci||a.city, stt||a.state, zp||(/^\d{5}(-\d{4})?$/.test(a.zip)?a.zip:'')];
+}
+
+// Consumer mailbox providers. Used only to tell a cold business inbound from
+// a customer who happens to use their work email.
+const WIX_CONSUMER_MAIL=/@(gmail|yahoo|hotmail|outlook|aol|icloud|me|mac|comcast|att|live|msn|protonmail|proton|duck|verizon|bellsouth|charter|cox|sbcglobal|mindspring|tds|earthlink|frontier|windstream)\./i;
+const WIX_TITLE_ONLY=/^(mr|mrs|ms|miss|dr|sir|madam|mister)\.?$/i;
+
+function convertWix(data){
+  const out=[], dropped=[];
+  const rows=[];
+  for(const r of data){
+    let first=cl(r['First Name']), last=cl(r['Last Name']);
+    // "Eric Zanon / Eric Zanon" - Wix copies a single-field name into both.
+    if(first&&last&&first.toLowerCase()===last.toLowerCase()) last='';
+    // "Ben / Ben Kaiser" - the last-name field holds the whole name.
+    if(first&&last&&last.toLowerCase().startsWith(first.toLowerCase()+' ')) last=last.slice(first.length+1).trim();
+    // A bare title is not a first name.
+    if(WIX_TITLE_ONLY.test(first)&&last){ first=last; last=''; }
+    // One field holding a full name.
+    if(first&&!last&&/\s/.test(first)){ const sp=splitName(first); if(sp&&sp[0]){ first=sp[0]; last=sp[1]||''; } }
+    const {phone,bad}=wixPhone(r['Phone 1']);
+    const alt=wixPhone(r['Phone 2']);
+    const email=cl(r['Email 1']);
+    const [a1,city,state,zip]=wixAddress(r);
+    const services=cl(r['Labels']).split(';').map(x=>cl(x))
+      .filter(x=>x&&x.toLowerCase()!=='contacts.csv');   // an old import artifact, not a service
+    const notes=[];
+    if(services.length) notes.push('Previous services: '+services.join(', '));
+    if(cl(r['Vehicles'])) { /* vehicles ride in the Item column */ }
+    if(bad) notes.push('Phone on file was incomplete: '+bad);
+    if(alt.phone&&alt.phone!==phone) notes.push('Second phone: '+alt.phone);
+    if(/^unsubscribed$/i.test(cl(r['Email subscriber status']))) notes.push('Unsubscribed from marketing email');
+    rows.push({first,last,phone,email,a1,city,state,zip,
+      item:cl(r['Vehicles']), notes:notes.join(' | '),
+      hasAddr:!!(a1||city||zip), raw:r});
+  }
+
+  // ── remove what is not a customer ────────────────────────────────────────
+  // Three mechanical rules, each reported so a human can see what went.
+  const keep=[];
+  for(const x of rows){
+    const name=(x.first+' '+x.last).trim();
+    if(!name){ dropped.push('(no name) <'+(x.email||'no email')+'>'); continue; }
+    // A business-domain email with no phone and no address is a cold inbound
+    // or the shop's own mailbox, never a detailing customer. Every real
+    // customer here who uses a work address also left a phone.
+    if(x.email&&!WIX_CONSUMER_MAIL.test(x.email)&&!x.phone&&!x.hasAddr){
+      dropped.push(name+' <'+x.email+'> — business email, no phone or address');
+      continue;
+    }
+    if(/^(demo|test|testing|sample)\b/i.test(name)||/^[a-z0-9]+[_.][a-z0-9.]*\d/i.test(name)&&!x.email&&!x.phone){
+      dropped.push(name+' — test or placeholder record');
+      continue;
+    }
+    keep.push(x);
+  }
+
+  // ── collapse contactless stubs onto the real record ──────────────────────
+  // Wix's "External App" source leaves name-only stubs that duplicate a real
+  // contact ("Lance Stafford" twice, "Palez51" beside "Pale_Z51"). Compared
+  // on letters and digits only, so punctuation differences still match.
+  const slug=x=>(x.first+x.last).toLowerCase().replace(/[^a-z0-9]/g,'');
+  const withContact={};
+  for(const x of keep) if(x.email||x.phone||x.hasAddr) withContact[slug(x)]=true;
+  const merged=keep.filter(x=>{
+    if(x.email||x.phone||x.hasAddr) return true;
+    if(withContact[slug(x)]){ dropped.push((x.first+' '+x.last).trim()+' — name-only duplicate of a record that has contact details'); return false; }
+    return true;
+  });
+
+  for(const x of merged){
+    out.push([x.first||x.last||'Customer', x.first?x.last:'', 'Individual',
+      x.a1,'',x.city,x.state,x.zip, x.state||x.zip?'US':'',
+      x.phone, x.email, x.notes, x.item, '', '']);
+  }
+  out._dropped=dropped;
+  return out;
+}
+
 // ─── Urable customers export ────────────────────────────────────────────────
 // The account's own customer export (not the import template): ID, Type, Status,
 // First/Last Name, Amount Spent, address block, Items, Notes, Origin...
@@ -2244,7 +2447,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-11-13a origin-span-fix';
+const BUILD='2026-11-16a wix-contacts';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -3586,6 +3789,9 @@ function detectPlatform(filename, headers, rawRows){
   if(h.includes('customerid')&&h.includes('tax exempt')&&
      (h.includes('contact first name')||h.includes('primary phone'))) return 'tekmetric';
   if(fn.includes('tekmetric')) return 'tekmetric';
+  // Wix contacts export: a numbered address block plus its subscriber columns.
+  // Placed ahead of the looser name/address rules so they cannot claim it.
+  if(wixKind(headers)) return 'wix';
   // Housecall Pro customer export: four address blocks and its own flags
   if(h.includes('address_1 street line 1')&&(h.includes('customer is contractor')||h.includes('lifetime value'))) return 'hcpcust';
   // QuickBooks customer list. Name + Open Balance are the only columns it
@@ -6240,7 +6446,7 @@ function convertTekmetric(data){
   return rows;
 }
 
-const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template','acuity':'Acuity Scheduling','tekmetric':'Tekmetric','hcpcust':'Housecall Pro','purchased':'Bought client list','agenda':'Google Calendar + Square agenda','orbisclients':'OrbisX','simplelist':'Merged client list','qbcust':'QuickBooks customer list','generic':'Matched by column name'};
+const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template','acuity':'Acuity Scheduling','tekmetric':'Tekmetric','hcpcust':'Housecall Pro','purchased':'Bought client list','agenda':'Google Calendar + Square agenda','orbisclients':'OrbisX','simplelist':'Merged client list','qbcust':'QuickBooks customer list','generic':'Matched by column name','wix':'Wix'};
 
 // One dispatch table, used by the single-file path and the multi-file path
 // alike — so a converter added later can't reach one and miss the other.
@@ -6258,6 +6464,7 @@ function convertCustomerRows(platform, raw, rawObjRows){
   if(platform==='hubspot') return convertHubSpot(rawObjRows);
   if(platform==='stripe') return convertStripe(rawObjRows);
   if(platform==='mtrx') return convertMTRX(rawObjRows);
+  if(platform==='wix') return convertWix(rawObjRows);
   if(platform==='urablecust') return convertUrableCust(rawObjRows);
   if(platform==='squarealt') return convertSquareAlt(rawObjRows);
   if(platform==='jobsexport') return convertJobsExport(rawObjRows);
@@ -6688,7 +6895,11 @@ function processRaw(raw, filename){
 
   currentKind='customers';
   convertedRows=rows;
-  let dupes=dupesBefore>0?Math.max(0,dupesBefore-rows.length):0;
+  // Records a converter removed on purpose are not duplicates. Counting them
+  // as "duplicates removed" tells the operator something false about their
+  // own list, so take them out of the count and name them instead.
+  const droppedList=(rows._dropped||[]);
+  let dupes=dupesBefore>0?Math.max(0,dupesBefore-rows.length-droppedList.length):0;
   const names=CUSTOMER_PLATFORM_NAMES;
   sourcePlatformName=names[platform];
   showOriginName();
@@ -6698,6 +6909,17 @@ function processRaw(raw, filename){
     extra.push('the filename says these are leads \u2014 '+fnTagged.toLocaleString()+' imported with status "'+st+
       '"'+(st==='new'?' (Urable has no "lead"; new is its equivalent)':'')+
       '. If any of them are already customers, drop that file in the same go and they will come out existing.');
+  }
+  if(droppedList.length){
+    extra.push(droppedList.length+' record'+(droppedList.length===1?'':'s')+
+      ' removed as not-a-customer \u2014 listed below, check before importing');
+    try{
+      const lg=document.getElementById('importLog');
+      if(lg){ lg.style.display='block'; }
+      logLine('Removed '+droppedList.length+' record'+(droppedList.length===1?'':'s')+' from '+filename+':');
+      droppedList.forEach(d=>logLine('   \u2022 '+d));
+      logLine('Nothing else was dropped. If any of these should be imported, say so and the rule can be relaxed.');
+    }catch(e){}
   }
   if(rows._generic&&rows._generic.junkName) extra.push(rows._generic.junkName+' row(s) had prose where a name should be \u2014 cold sales emails pasted into the list \u2014 and were skipped');
   if(rows._crossNoted) extra.push(rows._crossNoted+' pair'+(rows._crossNoted===1?'':'s')+' share a phone or email under different names \u2014 kept separate, review in Urable');
