@@ -2152,8 +2152,19 @@ function processFielddBundle(fdJobs, fdInv, fdQuo, fdPay, ignored){
 // invoices and the calendar both make jobs and the payments say what was
 // collected, so they are converted together rather than one file at a time.
 function processOrbisJobs(orb, used, ignored){
-  let jd;
-  try{ jd=convertOrbisJobs(orb); }
+  let jd, est=null;
+  try{
+    jd=(orb.invoices.length||orb.calendar.length)?convertOrbisJobs(orb):[];
+    if(!jd._orbis) jd._orbis={locations:[],lines:{}};
+    // Estimates ride along in the same drop and become quote-status jobs.
+    if((orb.estimates||[]).length){
+      const rows=[].concat(...orb.estimates.map(p=>p.rows));
+      const q=convertOrbisEstimates(rows);
+      est=q._orbEst;
+      const base=jd._orbis;
+      jd=jd.concat(q); jd._orbis=base;
+    }
+  }
   catch(err){ showError('Conversion error: '+err.message); return; }
   if(!jd.length){ showError('No jobs could be made from those OrbisX files.'); return; }
   const st=jd._orbis;
@@ -2180,6 +2191,13 @@ function processOrbisJobs(orb, used, ignored){
   if(st.feeCents) bits.push(fmtPrice(st.feeCents/100)+' processing fees');
   if(st.depositCents) bits.push(fmtPrice(st.depositCents/100)+' deposits already taken');
   if(st.noCustomer) bits.push(L(st.noCustomer)+' with no customer, left out');
+  if(est){
+    const skipped=Object.entries(est.byStatus||{}).filter(([k])=>!/^(pending|declined)$/i.test(k))
+      .map(([k,v])=>L(v)+' '+k.toLowerCase());
+    bits.push(L(est.imported)+' estimate'+(est.imported===1?'':'s')+' brought in as quotes'+
+      (skipped.length?(' \u2014 '+skipped.join(', ')+' left out'):''));
+    if(est.imported) bits.push('quoted customers have no contact details in that export, so they match by name only');
+  }
   if(ignored&&ignored.length) bits.push('NOT read: '+ignored.join(', '));
   document.getElementById('detStats').textContent=bits.join(' \u00b7 ');
   showPreview(convertedRows);
@@ -2246,7 +2264,7 @@ function processJobsBundle(parts){
   // An OrbisX set is four files per location and the shop may drop all twenty
   // at once. Claim them before anything else: they are recognised by their own
   // headers, so a mixed drop still sorts itself out.
-  const orb={invoices:[],calendar:[],payments:[],clients:[]}, orbNames=[], orbClients=[];
+  const orb={invoices:[],calendar:[],payments:[],clients:[],estimates:[]}, orbNames=[], orbClients=[];
   const rest=[];
   for(const p of parts){
     const sh=shapeRaw(p.raw);
@@ -2255,10 +2273,16 @@ function processJobsBundle(parts){
     // The clients list makes customers, not jobs. Dropping all twenty files in
     // this box must not report it as read and then quietly ignore it.
     if(k==='clients'){ orbClients.push(p.name); continue; }
+    // The leads export belongs in the customers box too, and estimates have
+    // no jobs converter yet. Neither has a bucket here, and orb[k].push on a
+    // missing bucket threw - so dropping the whole OrbisX export in this box
+    // killed the run instead of sorting itself out.
+    if(k==='leads'){ orbClients.push(p.name+' \u2014 the OrbisX leads list'); continue; }
+    if(!orb[k]){ rest.push(p); continue; }
     orb[k].push({loc:orbLocation(p.name),rows:sh.objRows,name:p.name});
     orbNames.push(p.name);
   }
-  if(orb.invoices.length||orb.calendar.length){
+  if(orb.invoices.length||orb.calendar.length||orb.estimates.length){
     const skip=rest.map(p=>p.name);
     if(orbClients.length) skip.push(orbClients.join(', ')+' \u2014 the OrbisX client list'+
       (orbClients.length===1?'':'s')+', which belong'+(orbClients.length===1?'s':'')+
@@ -2447,7 +2471,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-11-19a orbis-catalog';
+const BUILD='2026-11-19c orbis-estimates';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -6213,6 +6237,121 @@ function orbInvoiceGroups(rows){
   return out;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// OrbisX estimates -> quote-status jobs
+//
+// One row per line item, grouped by ProposalNo; the header fields (Customer,
+// Title, Status, Proposal Total, ExpirationDate) are written on the FIRST row
+// of each proposal only.
+//
+// Pure Finish's 381 proposals split Deleted 279 / Accepted 77 / Pending 21 /
+// Declined 4, and only the last two are worth importing:
+//
+//   Deleted  - the shop threw these away. Importing them would resurrect
+//              $914,894 of quotes nobody wants to see.
+//   Accepted - these became real work, and 26 of the 77 already match an
+//              invoice by customer and total. They arrive through the jobs
+//              import; bringing them in here as well would duplicate them.
+//   Pending  - the live pipeline, and the reason to do this at all.
+//   Declined - lost deals, cheap to keep, no duplication risk.
+//
+// The export carries NO email or phone, so these customers can only be
+// matched by name. That is why a quote-only customer imports thin: the jobs
+// and customers runs supply the real contact details.
+// ═══════════════════════════════════════════════════════════════════════════
+const ORB_EST_IMPORT=/^(pending|declined)$/i;
+
+// "Dec 20th 2023", "Jan 22nd 2024" - OrbisX's long form with an ordinal.
+function orbLongDate(v){
+  const t=cl(v); if(!t) return null;
+  const m=/^([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?[,\s]+(\d{4})$/.exec(t);
+  if(m){
+    const d=new Date(m[1]+' '+m[2]+', '+m[3]);
+    if(!isNaN(d.getTime())) return d.getTime();
+  }
+  const d2=new Date(t);
+  return isNaN(d2.getTime())?null:d2.getTime();
+}
+
+// A proposal Title is usually the vehicle ("2026 Lexus GX550 Overtrail"),
+// occasionally a note ("Work Truck"). Treat a leading 4-digit year as the
+// tell, so a real vehicle lands on the job and a note stays the title.
+function orbEstVehicle(t){
+  const v=cl(t);
+  return /^(19|20)\d{2}\s+\S/.test(v)?v:'';
+}
+
+function convertOrbisEstimates(data){
+  const st={proposals:0,imported:0,byStatus:{},lines:0,noCustomer:0,withVehicle:0,taxCents:0};
+  const grp={}, order=[];
+  for(const r of data){
+    const no=cl(r['ProposalNo']); if(!no) continue;
+    if(!grp[no]){ grp[no]=[]; order.push(no); }
+    grp[no].push(r);
+  }
+  const jobs=[];
+  for(const no of order){
+    const g=grp[no], head=g[0];
+    st.proposals++;
+    const status=cl(head['Status'])||'(none)';
+    st.byStatus[status]=(st.byStatus[status]||0)+1;
+    if(!ORB_EST_IMPORT.test(status)) continue;
+    const name=orbText(head['Customer']);
+    if(!name){ st.noCustomer++; continue; }
+
+    const names=[],cents=[],cats=[],sizes=[];
+    let taxC=0;
+    for(const r of g){
+      const nm=orbText(r['Item(Product/Service)']); if(!nm) continue;
+      const amt=orbCents(r['ItemAmount']);
+      taxC+=orbCents(r['ItemTaxAmount']);
+      // A $0 line on a quote is a bundled inclusion the shop is showing the
+      // customer ("Full Exterior Prep Detail"), so it is kept - the quote
+      // should read the way the customer saw it.
+      names.push(nm); cents.push(amt); cats.push('Imported'); sizes.push('');
+      st.lines++;
+    }
+    if(!names.length){ names.push('Imported service'); cents.push(0); cats.push('Imported'); sizes.push(''); }
+    const subtotal=cents.reduce((a,b)=>a+b,0);
+    const adjustments=[];
+    if(taxC>0){ adjustments.push({type:'fee',name:'Sales tax',cents:taxC}); st.taxCents+=taxC; }
+    const total=subtotal+taxC;
+
+    const exp=orbLongDate(head['ExpirationDate']);
+    const veh=orbEstVehicle(head['Title']);
+    if(veh) st.withVehicle++;
+    const np=['OrbisX estimate #'+no];
+    if(cl(head['Status'])) np.push('Quote was '+cl(head['Status']).toLowerCase()+' in OrbisX');
+    if(cl(head['ExpirationDate'])) np.push('Expires '+cl(head['ExpirationDate']));
+    if(orbText(head['Created By'])) np.push('Quoted by '+orbText(head['Created By']));
+    if(!veh&&orbText(head['Title'])) np.push('Title: '+orbText(head['Title']));
+    const descs=g.map(r=>orbStripHtml(r['ItemDescription'])).filter(Boolean);
+    if(descs.length) np.push('Included: '+descs.join(' / ').slice(0,700));
+    np.push('No contact details in the OrbisX estimates export — matched by name');
+
+    jobs.push({
+      num:'', srcRef:'OrbisX estimate #'+no, status:'quote', type:'shop',
+      title:veh||orbText(head['Title'])||names[0]||'',
+      customer:{ name:name, email:'', phone:'', a1:'',a2:'',city:'',state:'',zip:'',country:'' },
+      vehicles:veh?[veh]:[], vins:[], plates:[],
+      itemType:'automotive',
+      completedAt:null, updatedAt:exp,
+      lineItems:names, lineCents:cents, lineCats:cats, lineSizes:sizes,
+      subtotal:subtotal,
+      perLineCents:names.length?Math.floor(subtotal/names.length):subtotal,
+      firstLineCents:names.length?subtotal-Math.floor(subtotal/names.length)*(names.length-1):subtotal,
+      adjustments:adjustments,
+      start:exp, end:exp, dropOff:exp, allDay:true,
+      taxed:taxC>0, notes:np.join(' | ').slice(0,1900),
+      // A quote has been collected against by definition: nothing is paid.
+      total:total, paid:0
+    });
+    st.imported++;
+  }
+  jobs._orbEst=st;
+  return jobs;
+}
+
 function convertOrbisJobs(parts){
   // parts: {invoices:[{loc,rows}], calendar:[...], payments:[...]}
   const st={locations:[],invoices:0,services:0,lines:{},depositFolded:0,depositFromCalendar:0,
@@ -6314,7 +6453,13 @@ function convertOrbisJobs(parts){
         // item is. Three of the five locations use it; the other two type tax
         // in as a line item instead, so both have to be read.
         taxC+=orbCents(r['ItemTaxAmount']);
-        feeC+=orbCents(r['Admin Fee'])+orbCents(r['Admin Fee Tax']);
+        // OrbisX names this column differently per account - "Admin Fee" at
+        // the five-location shop, "Processing fee" at Pure Finish - and it is
+        // written on the invoice's first row only, so summing is safe. It is
+        // inside OrbisX's own invoice total, unlike Tips: dropping it left 836
+        // of Pure Finish's jobs $14,882 short of the invoices they came from.
+        feeC+=orbCents(r['Admin Fee'])+orbCents(r['Admin Fee Tax'])
+             +orbCents(r['Processing fee'])+orbCents(r['Processing fee Tax']);
         // The Tips column sits outside OrbisX's own invoice total, so adding
         // it would put every tipped job above the figure the shop reconciles
         // against. It is recorded on the job instead.
@@ -6371,7 +6516,12 @@ function convertOrbisJobs(parts){
       // something is revenue OrbisX counted in its total, and removing it put
       // 34 jobs below what the shop billed. Only on a deposit-only invoice is
       // a positive deposit line the deposit itself.
-      if(names.length&&depPosC>0){ extraC+=depPosC; depPosC=0; }
+      // ...but NOT when the only line we have is the one just synthesised
+      // from the calendar. That figure is the whole job, deposit included, so
+      // folding the deposit in again bills it twice: invoice #923236 (a $50
+      // deposit against a $175 job) came out at $225, and #936386 at exactly
+      // double. The deposit is money already taken - it belongs in depC.
+      if(names.length&&depPosC>0&&!fromCal){ extraC+=depPosC; depPosC=0; }
       depC=depNegC+depPosC;
       // Fold the tender/discount amount onto the work it paid for.
       if(extraC>0&&names.length){ cents[cents.length-1]+=extraC; extraC=0; }
@@ -6445,8 +6595,11 @@ function convertOrbisJobs(parts){
       if(credC>0){ adjustments.push({type:'discount',name:'OrbisX credit',cents:credC}); st.creditCents+=credC; }
       st.depositCents+=depC;
 
-      const vehRaw=orbText((head['Vehicles']||'').split('\n')[0]);
-      const vinRaw=cl((head['VINs']||'').split('\n')[0]);
+      // A spreadsheet cell holding only digits arrives as a NUMBER, not a
+      // string - one Pure Finish row has Vehicles 2013 and VINs 2 - and
+      // .split on it threw, killing the whole import. Always coerce first.
+      const vehRaw=orbText(String(head['Vehicles']||'').split('\n')[0]);
+      const vinRaw=cl(String(head['VINs']||'').split('\n')[0]);
       const np=[locTag+' invoice #'+g.no];
       if(ev) np.push('OrbisX event '+ev);
       if(bare) np.push('DEPOSIT ONLY — OrbisX recorded no service on this invoice, please set the service');
