@@ -2059,10 +2059,16 @@ function processMixedCustomerFiles(parts){
     if(vehSt.unmatched.length) bits.push(vehSt.unmatched.length+' vehicle owner(s) are not in the client list and were left out'+
       (vehSt.unmatched.length<=4?(': '+vehSt.unmatched.join(', ')):''));
   }
-  const tagged=used.filter(u=>u.status);
+  // Only report a filename tag that actually changed something. A converter
+  // that already sets the status - OrbisX's leads export does - leaves
+  // nothing to tag, and saying '0 row(s) imported with status "lead"' reads
+  // like the leads failed to import when every one of them worked.
+  const tagged=used.filter(u=>u.status&&u.tagged);
   if(tagged.length){
     const L=n=>n.toLocaleString();
-    for(const u of tagged) bits.push(u.name+' is named as leads \u2014 '+L(u.tagged)+' row(s) imported with status "'+u.status+'" (Urable has no "lead"; new is its equivalent)');
+    // "lead" has been a real Urable status since the 2026-11-12 probe; the
+    // old text here still told the operator it did not exist.
+    for(const u of tagged) bits.push(u.name+' is named as leads \u2014 '+L(u.tagged)+' row(s) imported with status "'+u.status+'"');
     const byStatus={};
     for(const r of merged){ const k=custStatus(r[13])||'existing'; byStatus[k]=(byStatus[k]||0)+1; }
     bits.push('after merging: '+Object.keys(byStatus).sort().map(k=>L(byStatus[k])+' '+k).join(', '));
@@ -2471,7 +2477,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-11-19c orbis-estimates';
+const BUILD='2026-11-19d lead-msg';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -7226,7 +7232,7 @@ function processRaw(raw, filename){
   if(fnTagged){
     const st=custStatusFromFilename(filename);
     extra.push('the filename says these are leads \u2014 '+fnTagged.toLocaleString()+' imported with status "'+st+
-      '"'+(st==='new'?' (Urable has no "lead"; new is its equivalent)':'')+
+      '"'+
       '. If any of them are already customers, drop that file in the same go and they will come out existing.');
   }
   if(droppedList.length){
