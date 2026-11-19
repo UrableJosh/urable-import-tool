@@ -2477,7 +2477,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-11-19d lead-msg';
+const BUILD='2026-11-19e zero-values';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -6894,7 +6894,14 @@ function fdRenameHeaders(headerRow){
 function shapeRaw(raw){
   if(raw[0]&&raw[0].filter(c=>cl(c)).length===1&&raw[1]&&raw[1].filter(c=>cl(c)).length>3) raw=raw.slice(1);
   const headerRow=fdRenameHeaders(raw[0]||[]);
-  const objRows=raw.slice(1).map(r=>{const o={};headerRow.forEach((h,i)=>{o[cl(h)]=r[i]||'';});return o;})
+  // r[i] || '' loses the NUMBER ZERO, because 0 is falsy. Every $0 price,
+  // 0 quantity and 0 tax in a spreadsheet arrived as an empty string, and a
+  // converter reading it saw "no value" rather than "zero". Pure Finish's
+  // invoices carry 10,680 literal zeros: 519 of their $0 lines - the bundled
+  // inclusions a shop shows the customer, "Free Exterior Detail ($250
+  // Value)" - were dropped, costing 62 services and 91 price points. Only
+  // null and undefined are missing; 0 is a value.
+  const objRows=raw.slice(1).map(r=>{const o={};headerRow.forEach((h,i)=>{o[cl(h)]=(r[i]===undefined||r[i]===null)?'':r[i];});return o;})
     .filter(o=>Object.values(o).some(v=>cl(v)));
   return {raw, headerRow, objRows};
 }
