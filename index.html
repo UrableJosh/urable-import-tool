@@ -2447,7 +2447,7 @@ function cleanPrice(v){
 }
 // Price format for the CSV output. Urable's importer recognizes $-formatted
 // values; flip PRICE_DOLLAR to false to emit plain numbers instead.
-const BUILD='2026-11-16a wix-contacts';
+const BUILD='2026-11-19a orbis-catalog';
 const PRICE_DOLLAR=true;
 
 // A job line can carry its own amount, independent of the catalog entry's price
@@ -3784,6 +3784,8 @@ function detectPlatform(filename, headers, rawRows){
   if(h.includes('instant profile')) return 'squarealt';
   // OrbisX client export: its own client/lead id pair and a P&L column
   if(h.includes('client id')&&h.includes('lead id')&&h.includes('p&l')) return 'orbisclients';
+  if(h.includes('lead id')&&!h.includes('client id')&&h.includes('date added')&&h.includes('source')
+     &&(h.includes('vehicle make')||h.includes('unsubscribed email'))) return 'orbisleads';
   if(fn.includes('orbisx')&&h.includes('client id')) return 'orbisclients';
   // Tekmetric customer export
   if(h.includes('customerid')&&h.includes('tax exempt')&&
@@ -3832,6 +3834,9 @@ function detectProductPlatform(filename, headers){
   // Urable import template + older single-price variants → normalize/pass through
   if(h.startsWith('type|category|name|description')&&(h.includes('|prices')||h.includes('|price'))) return 'urabletemplate';
   if(fn.includes('pricebook')||h.includes('industry_uuid')) return 'hcp';
+  // The OrbisX invoice export IS this shop's catalog - see convertOrbisCatalog.
+  // Checked before the generic name+price rule, which would otherwise claim it.
+  if(h.includes('invoiceno')&&h.includes('item(product/service)')) return 'orbisinv';
   if(h.includes('variation name')&&h.includes('item type')) return 'squarecat';
   if(h.includes('unit price')&&h.includes('bookable')) return 'jobberprod';
   // Fieldd: packages sheet and add-ons sheet share 'internal cost'
@@ -5885,6 +5890,10 @@ function orbKind(headerRow){
   if(j.includes('|event id|')&&j.includes('|all services/packages/variations|')) return 'calendar';
   if(j.includes('|payment id|')&&j.includes('|invoice #|')&&j.includes('|payment date|')) return 'payments';
   if(j.includes('|client id|')&&j.includes('|lead id|')&&j.includes('|p&l|')) return 'clients';
+  // The Leads export is the Clients shape minus Client ID, P&L and the VIN
+  // block - every row is a lead that never converted.
+  if(j.includes('|lead id|')&&!j.includes('|client id|')&&j.includes('|date added|')&&j.includes('|source|')) return 'leads';
+  if(j.includes('|proposalno|')&&j.includes('|item(product/service)|')) return 'estimates';
   return null;
 }
 // "OrbisX_Fort_Worth_Invoices.csv" → "Fort Worth". The shop ran each site as
@@ -5905,11 +5914,154 @@ function orbZip(v){
   const m=/(\d{5})(-\d{4})?/.exec(cl(v));
   return m?(m[1]+(m[2]||'')):'';
 }
+// ═══════════════════════════════════════════════════════════════════════════
+// OrbisX catalog, built from the INVOICE history
+//
+// OrbisX's own Services and Packages exports are not the catalog. Services
+// holds 8 top-level CATEGORIES (Window Tint, Auto Detailing, PPF) and
+// Packages holds 25 package names - but the invoice lines name 756 distinct
+// things, of which only 37 appear in those two files. The priced variations
+// that shops actually sell ("Prime XR Window Tint - 2 Row Suv/Truck") are
+// simply not exported.
+//
+// So the catalog is reconstructed from what was really billed. A line reads
+// "Base - Variation"; the base becomes the service and every distinct price
+// becomes a labelled price point, which is the same shape Urable already
+// uses and what an OrbisX variation is.
+//
+// Pure Finish: 3,601 service lines -> 556 services / 1,366 price points, and
+// the job history reproduces to the cent. Flattening each service to a single
+// price instead would have misstated $441,202 of $1,492,600 - 29.6%.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Deposits and discounts are money movements on an invoice, not things the
+// shop sells, and they carry wild per-invoice amounts (one "Deposit" line
+// appears at 88 different values). They must never become catalog services.
+const ORB_NOT_A_SERVICE=/^(deposit|scheduling deposit|discount|tip|gratuity|processing fee|credit|refund|balance|payment)$/i;
+
+function orbStripHtml(v){
+  return cl(String(v||'')
+    .replace(/<\s*br\s*\/?\s*>/gi,' ')
+    .replace(/<\/\s*(p|li|ul|ol|div|h[1-6])\s*>/gi,' ')
+    .replace(/<[^>]*>/g,' ')
+    .replace(/&nbsp;?/gi,' ').replace(/&amp;/gi,'&').replace(/&lt;/gi,'<')
+    .replace(/&gt;/gi,'>').replace(/&quot;/gi,'"').replace(/&#39;|&rsquo;/gi,"'")
+    .replace(/\s+/g,' '));
+}
+
+// "Base - Variation - More" -> ['Base', 'Variation - More'].
+// Split on a dash with space either side so a hyphenated name survives:
+// "XPEL HP (Carbon) -Tint" has no trailing space and stays whole.
+function orbSplitItem(full){
+  const parts=String(full||'').split(/\s+[-–—]\s+/);
+  return [cl(parts[0]), parts.slice(1).map(x=>cl(x)).filter(Boolean).join(' - ')];
+}
+
+function convertOrbisCatalog(data){
+  const groups={}, order=[];
+  let skippedSpecial=0, skippedNoPrice=0, negativeLines=0, lines=0;
+  for(const r of data){
+    const full=cl(r['Item(Product/Service)']);
+    if(!full) continue;
+    // Test the BASE, not the whole line: "Scheduling Deposit - Yukon" and
+    // "Deposit - Color Change Commercial Wrap" carry a variation suffix, so a
+    // test against the full name let them through and they then collapsed
+    // into a "Scheduling Deposit" service priced at $100 and $1,375.
+    const [baseName]=orbSplitItem(full);
+    if(ORB_NOT_A_SERVICE.test(full)||ORB_NOT_A_SERVICE.test(baseName)){ skippedSpecial++; continue; }
+    const price=cleanPrice(r['ItemRate']);
+    // A negative rate is a discount or credit, whatever the shop called it -
+    // "Bundle Discount", "Military Discount", "Descuento", "Free Ceramic
+    // Coating", "Price match". Those are adjustments on one invoice, never
+    // catalog services, and they carry a different amount every time.
+    if(price===null){ skippedNoPrice++; continue; }
+    if(price<0){ negativeLines++; continue; }
+    lines++;
+    const [base,variation]=orbSplitItem(full);
+    if(!base) continue;
+    const key=base.toLowerCase();
+    if(!groups[key]){
+      groups[key]={name:base, pts:new Map(), desc:'', taxable:false};
+      order.push(key);
+    }
+    const g=groups[key];
+    if(!g.pts.has(price)) g.pts.set(price,new Map());
+    if(variation){ const vm=g.pts.get(price); vm.set(variation,(vm.get(variation)||0)+1); }
+    if(!g.desc){ const d=orbStripHtml(r['ItemDescription']); if(d) g.desc=d.slice(0,900); }
+    // Only a real sales tax makes a line taxable. OrbisX's "Transaction fee"
+    // is the card-processing charge - 933 lines carry it - and reading that
+    // as tax would mark most of the catalog taxable when the shop does not
+    // charge sales tax on it. Same trap as Square's first tax column.
+    if(/^sales tax$/i.test(cl(r['ItemTaxCode']))) g.taxable=true;
+  }
+  const out=[];
+  for(const key of order){
+    const g=groups[key];
+    // Cheapest first, so the price points read in a sensible order.
+    const prices=[...g.pts.keys()].sort((a,b)=>a-b);
+    const labels=prices.map(pr=>{
+      const vm=g.pts.get(pr);
+      if(!vm||!vm.size) return '';
+      // The variation most lines used at this price is the honest label.
+      let best='',n=-1;
+      for(const [v,c] of vm) if(c>n){ best=v; n=c; }
+      return best;
+    });
+    // Two price points must not read the same, or the shop sees "Coupe/Sedan"
+    // twice and cannot tell which is which. Qualify repeats with the amount.
+    // A semicolon joins the Labels and Prices columns positionally, so one
+    // inside a variation name would shift every later price onto the wrong
+    // label.
+    for(let i=0;i<labels.length;i++) labels[i]=String(labels[i]||'').replace(/;/g,',');
+    const seen={};
+    for(const l of labels) if(l) seen[l]=(seen[l]||0)+1;
+    for(let i=0;i<labels.length;i++){
+      // No variation name: the price is the only thing that identifies this
+      // point, and it is already shown beside it - so do not repeat it as
+      // "$6000.00 ($6000.00)".
+      if(!labels[i]){ labels[i]=prices.length>1?fmtPrice(prices[i]):''; continue; }
+      if(seen[labels[i]]>1) labels[i]=labels[i]+' ('+fmtPrice(prices[i])+')';
+    }
+    const multi=prices.length>1;
+    out.push(['service','', g.name, g.desc,
+      multi?labels.map((l,i)=>l||('Option '+(i+1))).join('; '):(labels[0]||''),
+      prices.map(fmtPrice).join('; '), '', g.taxable?'true':'false', '', '']);
+  }
+  out._orbCat={services:out.length, points:out.reduce((n,r)=>n+String(r[5]).split(';').length,0),
+    lines, skippedSpecial, skippedNoPrice, negativeLines};
+  return out;
+}
+
+// OrbisX writes some notes twice over - "RAM 2500 2024 white  RAM 2500 2024
+// white", "2017 dodge durango 2017 dodge durango". If the text is exactly its
+// own first half repeated, keep one copy.
+function orbDedupe(v){
+  const t=cl(v); if(t.length<8) return t;
+  const half=Math.floor(t.length/2);
+  const a=cl(t.slice(0,half)), b=cl(t.slice(half));
+  if(a&&a===b) return a;
+  // also the "X  X" form, where the two halves are separated by whitespace
+  const m=/^(.{4,}?)\s+\1$/.exec(t);
+  return m?cl(m[1]):t;
+}
 function convertOrbisClients(data){
   const out=[]; let biz=0, withVeh=0, unsub=0, leads=0;
   for(const r of data){
     let first=cl(r['First Name']), last=cl(r['Last Name']);
-    const whole=cl(r['Name']), company=cl(r['Company']);
+    let whole=cl(r['Name']); const company=cl(r['Company']);
+    // OrbisX lead forms write the name as "Alfonso Tafoya | Interior
+    // Detailing" and then split it themselves into First "Alfonso", Last
+    // "Detailing" - dropping the real surname and filing the service they
+    // asked about as the family name. 3,109 of Pure Finish's 4,282 leads look
+    // like this. So when the pipe is there, never trust First/Last: take the
+    // name from the left of it and keep the interest as a note.
+    let interest='';
+    if(whole.includes('|')){
+      const bar=whole.indexOf('|');
+      interest=orbStrip(whole.slice(bar+1));
+      whole=cl(whole.slice(0,bar));
+      first=''; last='';
+    }
     if(!first&&!last&&whole){
       const p=whole.trim().split(/\s+/);
       first=p.shift()||''; last=p.join(' ');
@@ -5924,11 +6076,12 @@ function convertOrbisClients(data){
     if(veh) withVeh++;
     const np=[];
     if(orbisClientLoc) np.push('OrbisX location: '+orbisClientLoc);
-    const note=orbStrip(r['Notes']), vnote=orbStrip(r['Vehicle Notes']);
+    const note=orbDedupe(orbStrip(r['Notes'])), vnote=orbDedupe(orbStrip(r['Vehicle Notes']));
     if(note) np.push(note);
     if(vnote) np.push('Vehicle notes: '+vnote);
     if(company&&type!=='Business') np.push('Company: '+company);
     if(cl(r['Tags'])) np.push('Tags: '+orbText(r['Tags']).replace(/\s*\n\s*/g,', '));
+    if(interest) np.push('Interested in: '+interest);
     if(cl(r['Source'])) np.push('Source: '+orbText(r['Source']));
     if(cl(r['VIN'])) np.push('VIN: '+cl(r['VIN']));
     if(cl(r['Plate Number'])) np.push('Plate: '+cl(r['Plate Number']));
@@ -5941,7 +6094,9 @@ function convertOrbisClients(data){
     // A row with a Lead ID and no Client ID never became a customer in OrbisX.
     // It still belongs in the list — the shop quoted them — but say which.
     let orbStatus='';
-    if(!cl(r['Client ID'])&&cl(r['Lead ID'])){ np.push('OrbisX lead, never converted'); leads++; orbStatus='new'; }
+    // Written before Urable accepted "lead", so this used to settle for
+    // "new". Probed against dev 2026-11-12: "lead" is stored verbatim.
+    if(!cl(r['Client ID'])&&cl(r['Lead ID'])){ np.push('OrbisX lead, never converted'); leads++; orbStatus='lead'; }
     if(cl(r['Date Added'])) np.push('Customer since '+cl(r['Date Added']).slice(0,10));
     // Half of OrbisX's zips carry a second number ("78730  357"), its states
     // mix "TX" and "Texas", and one row has a zip in the state column. And
@@ -6446,7 +6601,7 @@ function convertTekmetric(data){
   return rows;
 }
 
-const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template','acuity':'Acuity Scheduling','tekmetric':'Tekmetric','hcpcust':'Housecall Pro','purchased':'Bought client list','agenda':'Google Calendar + Square agenda','orbisclients':'OrbisX','simplelist':'Merged client list','qbcust':'QuickBooks customer list','generic':'Matched by column name','wix':'Wix'};
+const CUSTOMER_PLATFORM_NAMES={'jobber':'Jobber','shopmonkey':'Shopmonkey','fieldd':'Fieldd','square':'Square','ebms':'EBMS','ghl':'GoHighLevel','tintwiz':'TintWiz','detailbookie':'Detail Bookie','hubspot':'HubSpot','stripe':'Stripe','mtrx':'Mobile Tech RX','urablecust':'Urable customer export','squarealt':'Square','jobsexport':'Jobs export','smfleet':'Shopmonkey Fleet','billship':'Customer export','urable':'Urable template','acuity':'Acuity Scheduling','tekmetric':'Tekmetric','hcpcust':'Housecall Pro','purchased':'Bought client list','agenda':'Google Calendar + Square agenda','orbisclients':'OrbisX','simplelist':'Merged client list','qbcust':'QuickBooks customer list','generic':'Matched by column name','wix':'Wix','orbisleads':'OrbisX leads'};
 
 // One dispatch table, used by the single-file path and the multi-file path
 // alike — so a converter added later can't reach one and miss the other.
@@ -6465,6 +6620,7 @@ function convertCustomerRows(platform, raw, rawObjRows){
   if(platform==='stripe') return convertStripe(rawObjRows);
   if(platform==='mtrx') return convertMTRX(rawObjRows);
   if(platform==='wix') return convertWix(rawObjRows);
+  if(platform==='orbisleads') return convertOrbisClients(rawObjRows);
   if(platform==='urablecust') return convertUrableCust(rawObjRows);
   if(platform==='squarealt') return convertSquareAlt(rawObjRows);
   if(platform==='jobsexport') return convertJobsExport(rawObjRows);
@@ -6829,6 +6985,7 @@ function processRaw(raw, filename){
         if(prodPlatform==='hcp') rows=convertHCPPricebook(rawObjRows);
         else if(prodPlatform==='urableprod') rows=convertUrableProductsExport(rawObjRows);
         else if(prodPlatform==='urabletemplate') rows=convertUrableTemplateFlex(rawObjRows);
+        else if(prodPlatform==='orbisinv') rows=convertOrbisCatalog(rawObjRows);
         else if(prodPlatform==='squarecat') rows=convertSquareCatalog(rawObjRows);
         else if(prodPlatform==='jobberprod') rows=convertJobberProducts(rawObjRows);
         else if(prodPlatform==='namevariant'||prodPlatform==='tintwizprod') rows=convertNameVariantPrice(rawObjRows);
@@ -6848,13 +7005,22 @@ function processRaw(raw, filename){
       if(!rows.length){ showError('No products/services found in this file.'); return; }
       currentKind='products';
       convertedRows=rows;
-      const pn={'hcp':'Housecall Pro pricebook','genericprod':'Services list','urableprod':'Urable products export','urabletemplate':'Urable products template','squarecat':'Square catalog','jobberprod':'Jobber products','namevariant':'Services list (tiered)','tintwizprod':'TintWiz services','fielddprod':'Fieldd catalog'};
+      const pn={'hcp':'Housecall Pro pricebook','genericprod':'Services list','urableprod':'Urable products export','urabletemplate':'Urable products template','squarecat':'Square catalog','jobberprod':'Jobber products','namevariant':'Services list (tiered)','tintwizprod':'TintWiz services','fielddprod':'Fieldd catalog','orbisinv':'OrbisX catalog (from invoice history)'};
       sourcePlatformName=pn[prodPlatform];
       showOriginName();
       fillCategories(rows);
       // A catalog that came over without prices is not an error, but the shop
       // has to know before it starts writing jobs against it.
       const gaps=[];
+      if(rows._orbCat){
+        const c=rows._orbCat;
+        gaps.push('catalog rebuilt from '+c.lines.toLocaleString()+' invoice line'+(c.lines===1?'':'s')+
+          ' \u2014 '+c.services.toLocaleString()+' services, '+c.points.toLocaleString()+' price points');
+        const adj=(c.skippedSpecial||0)+(c.negativeLines||0);
+        if(adj) gaps.push(adj.toLocaleString()+' deposit, discount and credit line'+(adj===1?'':'s')+
+          ' left out \u2014 money movements on one invoice, not services');
+        if(c.skippedNoPrice) gaps.push(c.skippedNoPrice.toLocaleString()+' line'+(c.skippedNoPrice===1?'':'s')+' had no readable price');
+      }
       if(rows._zeroPoints) gaps.push(rows._zeroPoints+' price'+(rows._zeroPoints===1?'':'s')+' at $0.00 to fill in, across '+rows._zeroServices+' service'+(rows._zeroServices===1?'':'s'));
       if(rows._noPrice) gaps.push(rows._noPrice+' with no price \u2014 imported at $0.00');
       // Square's "variable" is the merchant saying "we quote this per job", not
